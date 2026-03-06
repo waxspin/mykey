@@ -29,6 +29,13 @@ pub enum MikeyError {
     #[error("crypto error: {0}")]
     Crypto(String),
 
+    #[error("peer key mismatch for '{peer}': expected {expected}, received {received}")]
+    PeerKeyMismatch {
+        peer: String,
+        expected: String,
+        received: String,
+    },
+
     #[error("parse error: {0}")]
     Parse(String),
 }

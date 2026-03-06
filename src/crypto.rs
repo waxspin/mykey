@@ -45,7 +45,18 @@ pub fn verify_mac(key: &[u8], data: &[u8], expected: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// X25519 Diffie-Hellman key pair
+/// Ephemeral X25519 Diffie-Hellman key pair.
+///
+/// This is the **default** key exchange primitive used by [`DhInitiator`] and
+/// [`DhResponder`]. Each call to [`generate()`](DhKeyPair::generate) creates a
+/// fresh keypair; the secret is consumed on [`diffie_hellman()`](DhKeyPair::diffie_hellman)
+/// and cannot be reused, providing forward secrecy.
+///
+/// For persistent keys with peer pinning (opt-in MITM protection), see
+/// [`Identity`](crate::identity::Identity) instead.
+///
+/// [`DhInitiator`]: crate::message::DhInitiator
+/// [`DhResponder`]: crate::message::DhResponder
 pub struct DhKeyPair {
     secret: EphemeralSecret,
     pub public: PublicKey,
@@ -58,7 +69,7 @@ impl DhKeyPair {
         Self { secret, public }
     }
 
-    /// Perform DH exchange, returns shared secret
+    /// Perform DH exchange, consuming the ephemeral secret. Returns shared secret.
     pub fn diffie_hellman(self, peer_public: &[u8; 32]) -> Vec<u8> {
         let peer = PublicKey::from(*peer_public);
         let shared = self.secret.diffie_hellman(&peer);

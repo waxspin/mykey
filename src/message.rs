@@ -681,7 +681,15 @@ impl MikeyMessage {
     }
 }
 
-/// Perform a complete DH key exchange (initiator side)
+/// Perform a complete DH key exchange (initiator side).
+///
+/// Uses **ephemeral keys** by default — a fresh X25519 keypair is generated
+/// on construction and consumed when [`complete()`](DhInitiator::complete) derives
+/// the SRTP keys. This provides forward secrecy but no identity verification.
+///
+/// For MITM-resistant exchanges with peer key pinning, use
+/// [`Identity`](crate::identity::Identity) and
+/// [`PinnedPeer`](crate::identity::PinnedPeer) instead.
 pub struct DhInitiator {
     keypair: Option<DhKeyPair>,
     rand_bytes: Vec<u8>,
@@ -758,7 +766,15 @@ impl DhInitiator {
     }
 }
 
-/// Perform a complete DH key exchange (responder side)
+/// Perform a complete DH key exchange (responder side).
+///
+/// Uses **ephemeral keys** by default — a fresh X25519 keypair is generated
+/// on construction and consumed when [`complete()`](DhResponder::complete) derives
+/// the SRTP keys. This provides forward secrecy but no identity verification.
+///
+/// For MITM-resistant exchanges with peer key pinning, use
+/// [`Identity`](crate::identity::Identity) and
+/// [`PinnedPeer`](crate::identity::PinnedPeer) instead.
 pub struct DhResponder {
     keypair: Option<DhKeyPair>,
 }
