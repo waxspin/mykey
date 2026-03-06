@@ -4,8 +4,11 @@ use crate::payload::{SpParam, SpPayload, SrtpParamType};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SrtpEncAlg {
+    /// No encryption.
     Null = 0,
+    /// AES Counter Mode (standard for SRTP).
     AesCm = 1,
+    /// AES f8 mode.
     AesF8 = 2,
 }
 
@@ -13,21 +16,32 @@ pub enum SrtpEncAlg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SrtpAuthAlg {
+    /// No authentication.
     Null = 0,
+    /// HMAC-SHA-1 (standard for SRTP).
     HmacSha1 = 1,
 }
 
 /// Builder for SRTP security policy (RFC 3830 Section 6.10.1)
 #[derive(Debug, Clone)]
 pub struct SrtpPolicy {
+    /// Encryption algorithm.
     pub enc_alg: SrtpEncAlg,
+    /// Encryption key length in bytes.
     pub enc_key_len: u8,
+    /// Authentication algorithm.
     pub auth_alg: SrtpAuthAlg,
+    /// Authentication key length in bytes.
     pub auth_key_len: u8,
+    /// Salt key length in bytes.
     pub salt_key_len: u8,
+    /// Whether SRTP encryption is enabled.
     pub srtp_encryption: bool,
+    /// Whether SRTCP encryption is enabled.
     pub srtcp_encryption: bool,
+    /// Whether SRTP authentication is enabled.
     pub srtp_authentication: bool,
+    /// Authentication tag length in bytes.
     pub auth_tag_len: u8,
 }
 

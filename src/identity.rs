@@ -44,6 +44,7 @@ const SECRET_KEY_FILENAME: &str = "mykey.key";
 /// ```
 pub struct Identity {
     secret: StaticSecret,
+    /// The X25519 public key derived from this identity's secret key.
     pub public: PublicKey,
 }
 
@@ -175,7 +176,9 @@ fn dirs_path() -> Option<PathBuf> {
 /// Peer public keys (`mykey.pub` files) should be distributed out-of-band
 /// via secure channels (rsync over SSH, config management, USB, etc.).
 pub struct PinnedPeer {
+    /// Human-readable name identifying this peer (used in error messages).
     pub name: String,
+    /// The expected X25519 public key for this peer.
     pub public_key: [u8; 32],
 }
 

@@ -1,10 +1,13 @@
+![Status: Experimental](https://img.shields.io/badge/status-experimental-orange)
+![CI](https://github.com/waxspin/mykey/actions/workflows/ci.yml/badge.svg)
+
 # mykey
 
-A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https://datatracker.ietf.org/doc/rfc3830/)) for SRTP key exchange.
+> **Warning:** This crate is unaudited and experimental. It has not been professionally reviewed for security vulnerabilities, timing attacks, or logical flaws. Do not use it in production environments or to protect sensitive data.
 
-**[Documentation](https://waxspin.github.io/mykey)**
+A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https://datatracker.ietf.org/doc/rfc3830/)) for SRTP key exchange in AES67 and SMPTE ST 2110 environments.
 
-mykey provides MIKEY message building, parsing, and key derivation for securing real-time audio streams with SRTP — including SAP/SDP integration for AES67 and SMPTE ST 2110 environments.
+**[Documentation & Book](https://waxspin.github.io/mykey)**
 
 ## Features
 
@@ -20,7 +23,7 @@ mykey provides MIKEY message building, parsing, and key derivation for securing 
 
 ```toml
 [dependencies]
-mykey = { path = "../mykey" }
+mykey = { path = "../mykey" }  # not yet published to crates.io
 ```
 
 ## Quick start
@@ -45,7 +48,7 @@ let resp_msg = responder.resp_message(csc_id)?;
 // Send resp_msg.to_bytes() back to the initiator
 
 // Both sides derive the same SRTP keys
-// (using shared RAND from init message and exchanged DH publics)
+let keys = initiator.complete(&resp_msg, suite)?;
 ```
 
 ### PSK mode
@@ -70,20 +73,19 @@ let msg = initiator.init_message()?;
 let sdp_line = mikey_to_sdp_attribute(&msg);
 
 // Or wrap in a full SAP packet
-let sap = build_sap_with_mikey([192, 168, 1, 10], 0x1234, &sdp_body, &msg);
+let sap = build_sap_with_mikey("192.168.1.10", 0x1234, &sdp_body, &msg)?;
 ```
 
 ### Peer key pinning (opt-in MITM protection)
 
 ```rust
-use std::path::Path;
 use mykey::identity::{Identity, PinnedPeer};
 
 // Generate or load a persistent keypair
-let my_id = Identity::load_or_generate(Path::new("/etc/mykey"))?;
+let my_id = Identity::load_or_generate(None)?;
 
 // Load a peer's public key distributed out-of-band (rsync, scp, etc.)
-let peer = PinnedPeer::from_file("studio-b", Path::new("/etc/mykey/peers/studio-b.pub"))?;
+let peer = PinnedPeer::from_file("studio-b", "/etc/mykey/peers/studio-b.pub")?;
 
 // After receiving a MIKEY message, verify the DH public matches the pin
 peer.verify(received_msg.dh_public().unwrap())?;

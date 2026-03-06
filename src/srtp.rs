@@ -13,7 +13,9 @@ pub struct SrtpKeyMaterial {
 /// SRTP crypto suite parameters
 #[derive(Debug, Clone, Copy)]
 pub struct SrtpCryptoSuite {
+    /// Length of the SRTP master key in bytes (16 for AES-128, 32 for AES-256).
     pub master_key_len: usize,
+    /// Length of the SRTP master salt in bytes (14 for AES-CM profiles).
     pub master_salt_len: usize,
 }
 

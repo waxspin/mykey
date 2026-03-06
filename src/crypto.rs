@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};

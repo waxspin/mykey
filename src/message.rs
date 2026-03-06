@@ -15,7 +15,9 @@ pub enum KeyExchangeMethod {
 /// High-level MIKEY message builder and parser
 #[derive(Debug)]
 pub struct MikeyMessage {
+    /// Parsed MIKEY common header.
     pub header: CommonHeader,
+    /// Ordered list of payloads following the header.
     pub payloads: Vec<Payload>,
     raw: Vec<u8>,
 }
@@ -698,6 +700,7 @@ pub struct DhInitiator {
 }
 
 impl DhInitiator {
+    /// Create a new initiator with a fresh ephemeral keypair and random RAND nonce.
     pub fn new(csc_id: u32, ssrc: u32) -> Self {
         let mut rand_bytes = vec![0u8; 16];
         use rand::RngCore;
@@ -780,6 +783,7 @@ pub struct DhResponder {
 }
 
 impl DhResponder {
+    /// Create a new responder with a fresh ephemeral keypair.
     pub fn new() -> Self {
         Self {
             keypair: Some(DhKeyPair::generate()),

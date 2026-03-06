@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 /// MIKEY payload types as defined in RFC 3830 Section 6.1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
