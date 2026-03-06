@@ -1,0 +1,10 @@
+[book]
+title = "mykey"
+authors = ["Ben Bryan"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://github.com/waxspin/mykey"
+edit-url-template = "https://github.com/waxspin/mykey/edit/main/book/src/{path}"
