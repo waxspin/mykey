@@ -1,0 +1,23 @@
+[package]
+name = "mykey"
+version = "0.1.0"
+edition = "2021"
+description = "MIKEY (RFC 3830) — Multimedia Internet KEYing for SRTP key exchange"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+thiserror = "1"
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+
+# DH / ECDH key exchange
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# For PSK and certificate modes
+hkdf = "0.12"
+
+[dev-dependencies]
+hex = "0.4"
