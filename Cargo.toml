@@ -19,5 +19,8 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 # For PSK and certificate modes
 hkdf = "0.12"
 
+# For SAP/SDP base64 encoding
+base64 = "0.22"
+
 [dev-dependencies]
 hex = "0.4"

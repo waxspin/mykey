@@ -76,7 +76,7 @@ pub struct CommonHeader {
 }
 
 /// SRTP-ID map entry (RFC 3830 Section 6.1.1)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SrtpId {
     pub policy_no: u8,
     pub ssrc: u32,
@@ -135,7 +135,7 @@ impl PrfFunc {
 }
 
 /// Timestamp payload (RFC 3830 Section 6.6)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimestampPayload {
     pub next_payload: u8,
     pub ts_type: TimestampType,
@@ -159,17 +159,29 @@ impl TimestampType {
             _ => None,
         }
     }
+
+    /// Size of the timestamp value in bytes
+    pub fn value_len(&self) -> usize {
+        match self {
+            Self::Ntp64 => 8,
+            Self::NtpShort => 4,
+            Self::Counter => 4,
+        }
+    }
 }
 
 /// RAND payload (RFC 3830 Section 6.11)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RandPayload {
     pub next_payload: u8,
     pub rand: Vec<u8>,
 }
 
 /// DH data payload (RFC 3830 Section 6.4)
-#[derive(Debug, Clone)]
+///
+/// Wire format: next_payload(1) | DH-Group(1) | DH-value(group_len) | KV-type(1) [| KV-data]
+/// Note: DH-value length is implied by DH-Group, not explicitly encoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DhPayload {
     pub next_payload: u8,
     pub dh_group: DhGroup,
@@ -212,8 +224,10 @@ impl DhGroup {
     }
 }
 
-/// KEMAC payload (RFC 3830 Section 6.2) — encrypted key data + MAC
-#[derive(Debug, Clone)]
+/// KEMAC payload (RFC 3830 Section 6.2)
+///
+/// Wire format: next_payload(1) | enc_alg(1) | enc_data_len(2) | enc_data(N) | mac_alg(1) | MAC(M)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KemacPayload {
     pub next_payload: u8,
     pub enc_alg: EncAlg,
@@ -266,7 +280,7 @@ impl MacAlg {
 }
 
 /// Security Policy payload (RFC 3830 Section 6.10)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpPayload {
     pub next_payload: u8,
     pub policy_no: u8,
@@ -274,15 +288,35 @@ pub struct SpPayload {
     pub params: Vec<SpParam>,
 }
 
-#[derive(Debug, Clone)]
+/// Security policy parameter (TLV)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpParam {
     pub param_type: u8,
     pub param_len: u8,
     pub param_value: Vec<u8>,
 }
 
+/// SRTP security policy parameter types (RFC 3830 Section 6.10.1)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SrtpParamType {
+    EncryptionAlg = 0,
+    SessionEncKeyLen = 1,
+    AuthAlg = 2,
+    SessionAuthKeyLen = 3,
+    SessionSaltKeyLen = 4,
+    PrfAlg = 5,
+    KeyDerivRate = 6,
+    SrtpEncryption = 7,
+    SrtcpEncryption = 8,
+    FecOrder = 9,
+    SrtpAuthentication = 10,
+    AuthTagLen = 11,
+    SrtpPrefixLen = 12,
+}
+
 /// ID payload (RFC 3830 Section 6.7)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdPayload {
     pub next_payload: u8,
     pub id_type: u8,
@@ -290,7 +324,7 @@ pub struct IdPayload {
 }
 
 /// Verification payload (RFC 3830 Section 6.9)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationPayload {
     pub next_payload: u8,
     pub mac: Vec<u8>,
@@ -307,4 +341,20 @@ pub enum Payload {
     Sp(SpPayload),
     Rand(RandPayload),
     Verification(VerificationPayload),
+}
+
+impl Payload {
+    /// Get the next_payload field from any payload variant
+    pub fn next_payload_type(&self) -> u8 {
+        match self {
+            Payload::Kemac(p) => p.next_payload,
+            Payload::Dh(p) => p.next_payload,
+            Payload::Timestamp(p) => p.next_payload,
+            Payload::Id(p) => p.next_payload,
+            Payload::Sp(p) => p.next_payload,
+            Payload::Rand(p) => p.next_payload,
+            Payload::Verification(p) => p.next_payload,
+            Payload::Header(h) => h.next_payload,
+        }
+    }
 }
