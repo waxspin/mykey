@@ -1,0 +1,5 @@
+mykey
+Copyright 2026 Ben Bryan
+
+A Rust implementation of MIKEY (Multimedia Internet KEYing, RFC 3830)
+for SRTP key exchange.

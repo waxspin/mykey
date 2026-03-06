@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "MIKEY (RFC 3830) — Multimedia Internet KEYing for SRTP key exchange"
 license = "MIT OR Apache-2.0"
+authors = ["Ben Bryan"]
 
 [dependencies]
 thiserror = "1"
