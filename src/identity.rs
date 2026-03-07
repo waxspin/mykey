@@ -337,7 +337,11 @@ mod tests {
         let err = pinned.verify(imposter.public.as_bytes()).unwrap_err();
 
         match err {
-            MikeyError::PeerKeyMismatch { peer, expected, received } => {
+            MikeyError::PeerKeyMismatch {
+                peer,
+                expected,
+                received,
+            } => {
                 assert_eq!(peer, "studio-rack-01");
                 assert_eq!(expected, expected_peer.public_key_hex());
                 assert_eq!(received, imposter.public_key_hex());

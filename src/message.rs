@@ -1030,7 +1030,11 @@ mod tests {
 
         let initiator = DhInitiator::new(0xABCD, 0x1234);
         let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
-        let init_bytes = initiator.init_message_with_sp(sp).unwrap().to_bytes().to_vec();
+        let init_bytes = initiator
+            .init_message_with_sp(sp)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
 
         let responder = DhResponder::new();
         let parsed_init = MikeyMessage::from_bytes(&init_bytes).unwrap();
@@ -1086,8 +1090,12 @@ mod tests {
         let tgk_a = crypto::derive_tgk(psk, &rand_a, 32).unwrap();
         let tgk_b = crypto::derive_tgk(psk, &rand_b, 32).unwrap();
 
-        let keys_a = srtp::derive_srtp_keys(&tgk_a, &rand_a, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80).unwrap();
-        let keys_b = srtp::derive_srtp_keys(&tgk_b, &rand_b, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80).unwrap();
+        let keys_a =
+            srtp::derive_srtp_keys(&tgk_a, &rand_a, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+                .unwrap();
+        let keys_b =
+            srtp::derive_srtp_keys(&tgk_b, &rand_b, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+                .unwrap();
 
         assert_ne!(keys_a.master_key, keys_b.master_key);
         assert_ne!(keys_a.master_salt, keys_b.master_salt);

@@ -301,8 +301,7 @@ mod tests {
         let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
         let mikey_msg = initiator.init_message_with_sp(sp).unwrap();
 
-        let sdp =
-            "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\ns=Test\r\nm=audio 5004 RTP/AVP 96\r\n";
+        let sdp = "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\ns=Test\r\nm=audio 5004 RTP/AVP 96\r\n";
         let sap = build_sap_with_mikey([192, 168, 1, 1], 0x0001, sdp, &mikey_msg);
         let sap_bytes = sap.to_bytes();
 
