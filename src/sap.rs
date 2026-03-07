@@ -277,4 +277,49 @@ mod tests {
         assert!(mikey_from_sdp_attribute("a=rtpmap:96 L24/48000/2").is_err());
         assert!(mikey_from_sdp_attribute("a=key-mgmt:mikey !!!invalid!!!").is_err());
     }
+
+    #[test]
+    fn test_sap_deletion_packet() {
+        let sdp = "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\ns=Test\r\n".to_string();
+        let mut packet = SapPacket::new_announcement([192, 168, 1, 1], 0xABCD, sdp.clone());
+        packet.deletion = true;
+
+        let bytes = packet.to_bytes();
+        let parsed = SapPacket::from_bytes(&bytes).unwrap();
+
+        assert!(parsed.deletion);
+        assert_eq!(parsed.msg_id_hash, 0xABCD);
+        assert_eq!(parsed.payload, sdp);
+    }
+
+    #[test]
+    fn test_sp_survives_sap_sdp_roundtrip() {
+        use crate::payload::DataType;
+        use crate::policy::SrtpPolicy;
+
+        let initiator = DhInitiator::new(1, 0x1234);
+        let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
+        let mikey_msg = initiator.init_message_with_sp(sp).unwrap();
+
+        let sdp = "v=0\r\no=- 0 0 IN IP4 192.168.1.1\r\ns=Test\r\nm=audio 5004 RTP/AVP 96\r\n";
+        let sap = build_sap_with_mikey([192, 168, 1, 1], 0x0001, sdp, &mikey_msg);
+        let sap_bytes = sap.to_bytes();
+
+        let parsed_sap = SapPacket::from_bytes(&sap_bytes).unwrap();
+        let key_line = parsed_sap
+            .payload
+            .lines()
+            .find(|l| l.starts_with("a=key-mgmt:mikey"))
+            .unwrap();
+        let parsed_mikey = mikey_from_sdp_attribute(key_line).unwrap();
+
+        assert_eq!(parsed_mikey.header.data_type, DataType::DhInit);
+
+        let sp_back = parsed_mikey.security_policy().unwrap();
+        assert_eq!(sp_back.proto_type, 0); // SRTP
+
+        let policy = SrtpPolicy::from_sp_payload(sp_back).unwrap();
+        assert_eq!(policy.enc_key_len, 16);
+        assert_eq!(policy.auth_tag_len, 10);
+    }
 }

@@ -325,4 +325,28 @@ mod tests {
         let shared_b = bob.diffie_hellman(&alice.public_key_bytes());
         assert_eq!(shared_a, shared_b);
     }
+
+    #[test]
+    fn test_peer_key_mismatch_error_fields() {
+        use crate::error::MikeyError;
+
+        let expected_peer = Identity::generate();
+        let imposter = Identity::generate();
+
+        let pinned = PinnedPeer::new("studio-rack-01", expected_peer.public_key_bytes());
+        let err = pinned.verify(imposter.public.as_bytes()).unwrap_err();
+
+        match err {
+            MikeyError::PeerKeyMismatch {
+                peer,
+                expected,
+                received,
+            } => {
+                assert_eq!(peer, "studio-rack-01");
+                assert_eq!(expected, expected_peer.public_key_hex());
+                assert_eq!(received, imposter.public_key_hex());
+            }
+            other => panic!("expected PeerKeyMismatch, got {other:?}"),
+        }
+    }
 }

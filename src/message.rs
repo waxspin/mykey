@@ -975,4 +975,175 @@ mod tests {
         let data = vec![1, 4, 5]; // version=1, data_type=DH_init, next=T, but too short
         assert!(MikeyMessage::from_bytes(&data).is_err());
     }
+
+    // --- New tests ---
+
+    #[test]
+    fn test_dh_exchange_via_wire_bytes() {
+        // Full end-to-end exchange: messages travel as raw bytes through from_bytes
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+
+        let initiator = DhInitiator::new(0x1234, 0xABCD);
+        let init_bytes = initiator.init_message().unwrap().to_bytes().to_vec();
+
+        let responder = DhResponder::new();
+        let parsed_init = MikeyMessage::from_bytes(&init_bytes).unwrap();
+
+        let resp_bytes = responder.resp_message(0x1234).unwrap().to_bytes().to_vec();
+        let parsed_resp = MikeyMessage::from_bytes(&resp_bytes).unwrap();
+
+        let init_keys = initiator.complete(&parsed_resp, suite).unwrap();
+        let resp_keys = responder.complete(&parsed_init, suite).unwrap();
+
+        assert_eq!(init_keys.master_key, resp_keys.master_key);
+        assert_eq!(init_keys.master_salt, resp_keys.master_salt);
+        assert_eq!(init_keys.master_key.len(), 16);
+        assert_eq!(init_keys.master_salt.len(), 14);
+    }
+
+    #[test]
+    fn test_dh_exchange_aes256_via_wire_bytes() {
+        let suite = SrtpCryptoSuite::AES_256_CM_SHA1_80;
+
+        let initiator = DhInitiator::new(0x5555, 0x9999);
+        let init_bytes = initiator.init_message().unwrap().to_bytes().to_vec();
+
+        let responder = DhResponder::new();
+        let parsed_init = MikeyMessage::from_bytes(&init_bytes).unwrap();
+
+        let resp_bytes = responder.resp_message(0x5555).unwrap().to_bytes().to_vec();
+        let parsed_resp = MikeyMessage::from_bytes(&resp_bytes).unwrap();
+
+        let init_keys = initiator.complete(&parsed_resp, suite).unwrap();
+        let resp_keys = responder.complete(&parsed_init, suite).unwrap();
+
+        assert_eq!(init_keys.master_key, resp_keys.master_key);
+        assert_eq!(init_keys.master_salt, resp_keys.master_salt);
+        assert_eq!(init_keys.master_key.len(), 32);
+        assert_eq!(init_keys.master_salt.len(), 14);
+    }
+
+    #[test]
+    fn test_dh_with_sp_produces_correct_keys() {
+        use crate::policy::SrtpPolicy;
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+
+        let initiator = DhInitiator::new(0xABCD, 0x1234);
+        let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
+        let init_bytes = initiator
+            .init_message_with_sp(sp)
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+
+        let responder = DhResponder::new();
+        let parsed_init = MikeyMessage::from_bytes(&init_bytes).unwrap();
+
+        let resp_bytes = responder.resp_message(0xABCD).unwrap().to_bytes().to_vec();
+        let parsed_resp = MikeyMessage::from_bytes(&resp_bytes).unwrap();
+
+        let init_keys = initiator.complete(&parsed_resp, suite).unwrap();
+        let resp_keys = responder.complete(&parsed_init, suite).unwrap();
+
+        assert_eq!(init_keys.master_key, resp_keys.master_key);
+        assert_eq!(init_keys.master_salt, resp_keys.master_salt);
+
+        // SP survives the round-trip
+        let sp_back = parsed_init.security_policy().unwrap();
+        assert_eq!(sp_back.proto_type, 0); // SRTP
+        assert!(!sp_back.params.is_empty());
+    }
+
+    #[test]
+    fn test_psk_mac_tamper_detected() {
+        // Build a PSK message, tamper with the trailing MAC, and verify
+        // that manual verification catches the corruption.
+        let psk = b"super-secret-psk-key-32-bytes!!!";
+        let rand_bytes = vec![0x77u8; 16];
+        let msg = MikeyMessage::new_psk_init(1, 0x1111, &rand_bytes, psk).unwrap();
+        let original = msg.to_bytes();
+
+        // The last 20 bytes are the appended HMAC-SHA-256 MAC.
+        let len = original.len();
+        let mac_start = len - 20;
+
+        // Derive auth_key the same way new_psk_init does.
+        let tgk = crypto::derive_tgk(psk, &rand_bytes, 32).unwrap();
+        let auth_key = crypto::derive_auth_key(&tgk, &rand_bytes, 32).unwrap();
+
+        // Original message verifies correctly.
+        crypto::verify_mac(&auth_key, &original[..mac_start], &original[mac_start..]).unwrap();
+
+        // Tamper: flip the last byte of the MAC.
+        let mut tampered = original.to_vec();
+        tampered[len - 1] ^= 0xFF;
+        let result = crypto::verify_mac(&auth_key, &tampered[..mac_start], &tampered[mac_start..]);
+        assert!(result.is_err(), "tampered MAC should fail verification");
+    }
+
+    #[test]
+    fn test_different_rand_produces_different_keys() {
+        let rand_a = vec![0xAAu8; 16];
+        let rand_b = vec![0xBBu8; 16];
+        let psk = b"same-psk-key-for-both-sessions!!";
+
+        let tgk_a = crypto::derive_tgk(psk, &rand_a, 32).unwrap();
+        let tgk_b = crypto::derive_tgk(psk, &rand_b, 32).unwrap();
+
+        let keys_a =
+            srtp::derive_srtp_keys(&tgk_a, &rand_a, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+                .unwrap();
+        let keys_b =
+            srtp::derive_srtp_keys(&tgk_b, &rand_b, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+                .unwrap();
+
+        assert_ne!(keys_a.master_key, keys_b.master_key);
+        assert_ne!(keys_a.master_salt, keys_b.master_salt);
+    }
+
+    #[test]
+    fn test_bad_next_payload_type_rejected() {
+        let initiator = DhInitiator::new(1, 2);
+        let msg = initiator.init_message().unwrap();
+        let mut bytes = msg.to_bytes().to_vec();
+        // Header byte 2 is next_payload — corrupt it to an unknown type
+        bytes[2] = 99;
+        assert!(MikeyMessage::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn test_unknown_dh_group_rejected() {
+        let initiator = DhInitiator::new(1, 2);
+        let msg = initiator.init_message().unwrap();
+        let mut bytes = msg.to_bytes().to_vec();
+        // DH-Init layout (no SP):
+        //   header(10) + cs_map_1_entry(9) = 19 bytes
+        //   T payload: next(1)+ts_type(1)+ts_value(4) = 6 bytes  [19..25]
+        //   RAND payload: next(1)+len(1)+rand(16) = 18 bytes      [25..43]
+        //   DH payload: next(1)+dh_group(1)+...                  [43..]
+        // bytes[43] = next_payload (255=Last), bytes[44] = dh_group (255=X25519)
+        bytes[44] = 50; // not a known DH group
+        assert!(MikeyMessage::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn test_truncated_rand_rejected() {
+        let initiator = DhInitiator::new(1, 2);
+        let msg = initiator.init_message().unwrap();
+        let mut bytes = msg.to_bytes().to_vec();
+        // RAND payload starts at offset 25.
+        // bytes[25] = next_payload, bytes[26] = rand_len (16).
+        // Claim 200 bytes — far more than available.
+        bytes[26] = 200;
+        assert!(MikeyMessage::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn test_csb_id_preserved_through_wire() {
+        let csc_id = 0xDEAD_BEEF_u32;
+        let initiator = DhInitiator::new(csc_id, 0x1111);
+        let msg = initiator.init_message().unwrap();
+        let parsed = MikeyMessage::from_bytes(msg.to_bytes()).unwrap();
+        assert_eq!(parsed.header.csc_id, csc_id);
+    }
 }
