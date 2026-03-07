@@ -15,7 +15,7 @@ mykey supports two MIKEY key exchange methods. The right choice depends on your 
 
 ## Ephemeral DH — the default
 
-```rust
+```rust,ignore
 use mykey::{DhInitiator, DhResponder};
 
 let initiator = DhInitiator::new(csc_id, ssrc);
@@ -28,7 +28,7 @@ let responder = DhResponder::new();
 
 ## PSK — Pre-shared Key
 
-```rust
+```rust,ignore
 use mykey::message::MikeyMessage;
 
 let msg = MikeyMessage::new_psk_init(csc_id, ssrc, &rand_bytes, psk)?;

@@ -15,9 +15,15 @@ PSK mode provides **no forward secrecy** — if the shared key is ever exposed, 
 ## Basic exchange
 
 ```rust
+# extern crate mykey;
+# extern crate rand;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::message::MikeyMessage;
 use mykey::srtp::SrtpCryptoSuite;
+# use mykey::MikeyError;
 
+# let csc_id: u32 = 1;
+# let ssrc: u32 = 0x12345678;
 let psk: &[u8] = b"my-shared-secret-key-32-bytes!!!";
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
 
@@ -27,22 +33,24 @@ let mut rand_bytes = [0u8; 16];
 rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut rand_bytes);
 
 let init_msg = MikeyMessage::new_psk_init(csc_id, ssrc, &rand_bytes, psk)?;
-let init_bytes = init_msg.to_bytes();
+let init_bytes = init_msg.to_bytes().to_vec();
 
 // send init_bytes to responder ...
 
 // --- Responder ---
 let parsed = MikeyMessage::from_bytes(&init_bytes)?;
-let rand = parsed.rand_bytes().ok_or(MikeyError::MissingPayload)?;
+let _rand = parsed.rand_bytes().ok_or(MikeyError::MissingPayload("RAND"))?;
 
 // Derive SRTP keys from the PSK and RAND
-let responder_keys = parsed.derive_psk_keys(psk, suite)?;
+let responder_keys = parsed.complete_psk(psk, suite)?;
 
 // --- Initiator ---
-let initiator_keys = init_msg.derive_psk_keys(psk, suite)?;
+let initiator_keys = init_msg.complete_psk(psk, suite)?;
 
 assert_eq!(initiator_keys.master_key, responder_keys.master_key);
 assert_eq!(initiator_keys.master_salt, responder_keys.master_salt);
+# Ok(())
+# }
 ```
 
 ## Key distribution

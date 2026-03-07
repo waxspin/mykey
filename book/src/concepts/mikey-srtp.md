@@ -34,7 +34,7 @@ MIKEY messages are compact binary structures designed for embedding in SDP sessi
 
 The key derivation in mykey follows RFC 3830 Section 4.1.2. Given a key and a label, it produces an output of arbitrary length using iterated HMAC-SHA-256:
 
-```
+```text
 PRF(key, label) = HMAC-SHA-256(key, label || 0x00 || i || output_len)
                   for i = 0, 1, 2, ... until enough bytes are produced
 ```
@@ -45,7 +45,7 @@ All SRTP key material — TGK, auth key, enc key, SRTP master key, and SRTP salt
 
 In an AES67 deployment, the flow looks like this:
 
-```
+```text
 [Initiator]                               [Responder]
     │                                          │
     │── DH-Init (MIKEY message in SDP) ───────>│
