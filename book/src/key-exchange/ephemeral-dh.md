@@ -13,11 +13,15 @@ The RAND ensures that even if the same keypairs were somehow reused, each sessio
 ## Basic exchange
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::{DhInitiator, DhResponder, srtp::SrtpCryptoSuite, message::MikeyMessage};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
 
 // --- Initiator ---
+# let csc_id: u32 = 1;
+# let ssrc: u32 = 0x12345678;
 let initiator = DhInitiator::new(csc_id, ssrc);
 let init_bytes = initiator.init_message()?.to_bytes().to_vec();
 
@@ -41,6 +45,8 @@ let responder_keys = responder.complete(&init_msg, suite)?;
 // initiator_keys and responder_keys are identical
 assert_eq!(initiator_keys.master_key, responder_keys.master_key);
 assert_eq!(initiator_keys.master_salt, responder_keys.master_salt);
+# Ok(())
+# }
 ```
 
 ## With security policy
@@ -48,23 +54,37 @@ assert_eq!(initiator_keys.master_salt, responder_keys.master_salt);
 Include an SP payload to declare the SRTP cipher suite to the peer:
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::{DhInitiator, SrtpPolicy};
 
+# let csc_id: u32 = 1;
+# let ssrc: u32 = 0x12345678;
 let initiator = DhInitiator::new(csc_id, ssrc);
 let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
-let init_msg = initiator.init_message_with_sp(sp)?;
+let _init_msg = initiator.init_message_with_sp(sp)?;
+# Ok(())
+# }
 ```
 
 The responder can read the policy back from the parsed message:
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::policy::SrtpPolicy;
+# use mykey::DhInitiator;
+# let csc_id: u32 = 1;
+# let sp_payload = SrtpPolicy::aes_128_default().to_sp_payload(0);
+# let parsed_msg = DhInitiator::new(csc_id, 0x12345678).init_message_with_sp(sp_payload)?;
 
 if let Some(sp) = parsed_msg.security_policy() {
     let policy = SrtpPolicy::from_sp_payload(sp).unwrap();
     println!("enc key len: {}", policy.enc_key_len);
     println!("auth tag len: {}", policy.auth_tag_len);
 }
+# Ok(())
+# }
 ```
 
 ## Choosing a crypto suite
@@ -75,20 +95,21 @@ if let Some(sp) = parsed_msg.security_policy() {
 | `AES_256_CM_SHA1_80` | 32 bytes | 14 bytes | AES-256-CM + HMAC-SHA1-80 |
 
 ```rust
+# extern crate mykey;
 use mykey::srtp::SrtpCryptoSuite;
 
 // AES-128 (default for AES67)
-let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+let _suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
 
 // AES-256 for compliance requirements
-let suite = SrtpCryptoSuite::AES_256_CM_SHA1_80;
+let _suite = SrtpCryptoSuite::AES_256_CM_SHA1_80;
 ```
 
 ## Using the derived keys
 
 The `SrtpKeyMaterial` returned by `complete()` contains the master key and salt ready to pass to an SRTP library:
 
-```rust
+```rust,ignore
 let keys = initiator.complete(&resp_msg, suite)?;
 
 println!("master_key: {}", hex::encode(&keys.master_key));

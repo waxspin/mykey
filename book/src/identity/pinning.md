@@ -6,16 +6,18 @@ This page shows how to use `Identity` and `PinnedPeer` to add MITM protection to
 
 `Identity::load_or_generate` is the standard entry point. It loads an existing keypair from disk, or generates a new one if none exists:
 
-```rust
+```rust,no_run
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+use std::path::Path;
 use mykey::Identity;
 
-// Load from default directory (~/.config/mykey/ on Unix, %APPDATA%\mykey\ on Windows)
-let identity = Identity::load_or_generate(None)?;
-
-// Load from a custom directory
-let identity = Identity::load_or_generate(Some("/etc/myapp/keys"))?;
+// Load from a directory (creates it if needed)
+let identity = Identity::load_or_generate(Path::new("/etc/myapp/keys"))?;
 
 println!("my public key: {}", identity.public_key_hex());
+# Ok(())
+# }
 ```
 
 The keypair is stored as two files:
@@ -46,27 +48,28 @@ The public key is just a 64-character hex string followed by a newline. It is sa
 Load a peer's public key using `PinnedPeer::from_file` or `PinnedPeer::from_hex`:
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::PinnedPeer;
 
-// Load from a file containing a hex-encoded public key
-let peer = PinnedPeer::from_file("studio-rack-01", "/etc/myapp/peers/studio-rack-01.pub")?;
-
 // Or inline from a hex string (e.g., from a config file)
-let peer = PinnedPeer::from_hex(
+let _peer = PinnedPeer::from_hex(
     "studio-rack-01",
     "4a7f3c2b1e9d8a056f4e3c2a1b0d9e8f7c6b5a4d3e2f1a0b9c8d7e6f5a4b3c2d",
 )?;
+# Ok(())
+# }
 ```
 
 ## Using identity during a DH exchange
 
 ### Initiator with identity
 
-```rust
+```rust,ignore
 use mykey::{DhInitiator, Identity, PinnedPeer, srtp::SrtpCryptoSuite};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
-let my_identity = Identity::load_or_generate(None)?;
+let my_identity = Identity::load_or_generate(std::path::Path::new("/etc/myapp/keys"))?;
 let peer = PinnedPeer::from_file("responder", "/etc/myapp/peers/responder.pub")?;
 
 let initiator = DhInitiator::new(csc_id, ssrc);
@@ -76,7 +79,7 @@ let init_msg = initiator.init_message()?;
 
 // Receive resp_msg, then verify peer identity before completing the exchange
 let resp_msg = MikeyMessage::from_bytes(&resp_bytes)?;
-let peer_pub = resp_msg.dh_public().ok_or(MikeyError::MissingPayload)?;
+let peer_pub = resp_msg.dh_public().ok_or(MikeyError::MissingPayload("DH"))?;
 peer.verify(peer_pub)?;  // returns Err(MikeyError::PeerKeyMismatch) if wrong
 
 let keys = initiator.complete(&resp_msg, suite)?;
@@ -84,7 +87,7 @@ let keys = initiator.complete(&resp_msg, suite)?;
 
 ### Responder with identity
 
-```rust
+```rust,ignore
 use mykey::{DhResponder, Identity, PinnedPeer, srtp::SrtpCryptoSuite};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
@@ -93,7 +96,7 @@ let peer = PinnedPeer::from_file("initiator", "/etc/myapp/peers/initiator.pub")?
 let init_msg = MikeyMessage::from_bytes(&init_bytes)?;
 
 // Verify the initiator's identity before responding
-let peer_pub = init_msg.dh_public().ok_or(MikeyError::MissingPayload)?;
+let peer_pub = init_msg.dh_public().ok_or(MikeyError::MissingPayload("DH"))?;
 peer.verify(peer_pub)?;
 
 let responder = DhResponder::new();
@@ -108,7 +111,7 @@ let keys = responder.complete(&init_msg, suite)?;
 
 `PinnedPeer::verify` compares the received DH public key byte-for-byte against the stored pinned key using a constant-time comparison. If they differ, it returns:
 
-```
+```text
 MikeyError::PeerKeyMismatch {
     peer: "studio-rack-01",
     expected: "4a7f3c...",

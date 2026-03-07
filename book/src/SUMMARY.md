@@ -33,6 +33,3 @@
 - [Cookbook](cookbook.md)
 - [API Reference](api-reference.md)
 
----
-
-[API Reference (rustdoc)](../doc/mykey/index.html)

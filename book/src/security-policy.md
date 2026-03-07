@@ -7,11 +7,17 @@ SP is optional — if omitted, both sides must agree on the cipher suite through
 ## Attaching SP to a DH-Init
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::{DhInitiator, SrtpPolicy};
 
+# let csc_id: u32 = 1;
+# let ssrc: u32 = 0x12345678;
 let initiator = DhInitiator::new(csc_id, ssrc);
 let sp = SrtpPolicy::aes_128_default().to_sp_payload(0);
-let init_msg = initiator.init_message_with_sp(sp)?;
+let _init_msg = initiator.init_message_with_sp(sp)?;
+# Ok(())
+# }
 ```
 
 The `policy_no` argument to `to_sp_payload()` links the SP to a specific crypto session. Use `0` unless you are managing multiple crypto sessions within a single CSB.
@@ -19,8 +25,15 @@ The `policy_no` argument to `to_sp_payload()` links the SP to a specific crypto 
 ## Reading SP from a parsed message
 
 ```rust
+# extern crate mykey;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use mykey::policy::SrtpPolicy;
+# use mykey::{DhInitiator, message::MikeyMessage};
 
+# let csc_id: u32 = 1;
+# let initiator = DhInitiator::new(csc_id, 0x12345678);
+# let sp_payload = SrtpPolicy::aes_128_default().to_sp_payload(0);
+# let wire_bytes = initiator.init_message_with_sp(sp_payload)?.to_bytes().to_vec();
 let parsed = MikeyMessage::from_bytes(&wire_bytes)?;
 
 if let Some(sp) = parsed.security_policy() {
@@ -30,29 +43,32 @@ if let Some(sp) = parsed.security_policy() {
     println!("auth_alg:     {:?}", policy.auth_alg);
     println!("auth_key_len: {} bytes", policy.auth_key_len);
     println!("auth_tag_len: {} bytes", policy.auth_tag_len);
-    println!("srtp_prefix:  {} bytes", policy.srtp_prefix_len);
 }
+# Ok(())
+# }
 ```
 
 ## Built-in presets
 
 ```rust
+# extern crate mykey;
 use mykey::policy::SrtpPolicy;
 
 // AES-128-CM + HMAC-SHA1-80 — matches AES67 default profile
-let policy = SrtpPolicy::aes_128_default();
+let _policy = SrtpPolicy::aes_128_default();
 
 // AES-256-CM + HMAC-SHA1-80 — for compliance requirements
-let policy = SrtpPolicy::aes_256_default();
+let _policy = SrtpPolicy::aes_256_default();
 ```
 
-Both presets set `srtp_on = true`, `srtcp_on = false`, `fec_order = FEC_SRTP`, and `replay_window_size = 64`.
+Both presets set `srtp_encryption = true`, `srtcp_encryption = true`, and `srtp_authentication = true`.
 
 ## Custom policy
 
 Build a policy by setting fields directly:
 
 ```rust
+# extern crate mykey;
 use mykey::policy::{SrtpPolicy, SrtpEncAlg, SrtpAuthAlg};
 
 let policy = SrtpPolicy {
@@ -60,13 +76,11 @@ let policy = SrtpPolicy {
     enc_key_len: 32,         // AES-256
     auth_alg: SrtpAuthAlg::HmacSha1,
     auth_key_len: 20,
+    salt_key_len: 14,
     auth_tag_len: 10,        // 80-bit tag
-    srtp_prefix_len: 0,
-    srtp_on: true,
-    srtcp_on: false,
-    fec_order: 0,
-    replay_window_size: 64,
-    ..Default::default()
+    srtp_encryption: true,
+    srtcp_encryption: false,
+    srtp_authentication: true,
 };
 
 let sp = policy.to_sp_payload(0);

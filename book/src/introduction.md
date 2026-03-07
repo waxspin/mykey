@@ -33,7 +33,7 @@ Ephemeral DH alone does not verify the identity of the peer. For trusted, isolat
 
 ## Quick orientation
 
-```rust
+```rust,ignore
 use mykey::{DhInitiator, DhResponder, srtp::SrtpCryptoSuite};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
