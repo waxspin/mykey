@@ -58,5 +58,8 @@ pub use error::MikeyError;
 pub use identity::{Identity, PinnedPeer};
 pub use message::{DhInitiator, DhResponder, KeyExchangeMethod, MikeyMessage};
 pub use policy::SrtpPolicy;
-pub use sap::{build_sap_with_mikey, mikey_from_sdp_attribute, mikey_to_sdp_attribute, SapPacket};
+pub use sap::{
+    build_sap_with_mikey, mikey_from_sdp_attribute, mikey_from_sdp_body, mikey_to_sdp_attribute,
+    SapPacket,
+};
 pub use srtp::SrtpKeyMaterial;

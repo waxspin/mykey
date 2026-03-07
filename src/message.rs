@@ -565,6 +565,26 @@ impl MikeyMessage {
         })
     }
 
+    /// Derive SRTP key material from a PSK-Init message using the shared `psk`.
+    ///
+    /// This is the PSK equivalent of [`DhInitiator::complete`] and
+    /// [`DhResponder::complete`].  Both the sender (who built the message with
+    /// [`new_psk_init`](MikeyMessage::new_psk_init)) and the receiver (who
+    /// parsed it) call this with the same `psk` to arrive at identical SRTP
+    /// keys.  The RAND nonce is extracted from the message itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message does not contain a RAND payload or if
+    /// the PRF computation fails.
+    pub fn complete_psk(&self, psk: &[u8], suite: SrtpCryptoSuite) -> Result<SrtpKeyMaterial> {
+        let rand = self
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?;
+        let tgk = crypto::derive_tgk(psk, rand, 32)?;
+        srtp::derive_srtp_keys(&tgk, rand, 0, suite)
+    }
+
     /// Get the RAND bytes from this message
     pub fn rand_bytes(&self) -> Option<&[u8]> {
         for p in &self.payloads {

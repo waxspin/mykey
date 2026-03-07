@@ -156,6 +156,19 @@ pub fn mikey_to_sdp_attribute(msg: &MikeyMessage) -> String {
     format!("a=key-mgmt:mikey {encoded}")
 }
 
+/// Find and parse the first MIKEY message from a full SDP body (RFC 4567).
+///
+/// Searches `sdp_body` line-by-line for an `a=key-mgmt:mikey` attribute and
+/// delegates to [`mikey_from_sdp_attribute`].  Returns an error if no such
+/// attribute is present or if the embedded MIKEY message is malformed.
+pub fn mikey_from_sdp_body(sdp_body: &str) -> Result<MikeyMessage> {
+    let line = sdp_body
+        .lines()
+        .find(|l| l.starts_with("a=key-mgmt:mikey"))
+        .ok_or_else(|| MikeyError::Parse("no a=key-mgmt:mikey attribute found in SDP".into()))?;
+    mikey_from_sdp_attribute(line)
+}
+
 /// Extract and parse a MIKEY message from an SDP `a=key-mgmt:mikey` attribute line.
 pub fn mikey_from_sdp_attribute(line: &str) -> Result<MikeyMessage> {
     let line = line.trim();
