@@ -14,15 +14,10 @@ thiserror = "1"
 rand = "0.8"
 hmac = "0.12"
 sha2 = "0.10"
-aes = "0.8"
-ctr = "0.9"
 hex = "0.4"
 
 # DH / ECDH key exchange
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-
-# For PSK and certificate modes
-hkdf = "0.12"
 
 # For SAP/SDP base64 encoding
 base64 = "0.22"
