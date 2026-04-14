@@ -11,7 +11,7 @@ homepage = "https://waxspin.github.io/mykey"
 
 [dependencies]
 thiserror = "1"
-rand = "0.8"
+rand = "0.9"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
