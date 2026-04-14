@@ -14,6 +14,14 @@ mykey is a cryptographic library. Security issues in this project include:
 
 Issues in downstream dependencies (x25519-dalek, hmac, sha2, aes, rand) should be reported to those projects directly. If you believe a dependency issue has a specific impact on mykey, include that context in your report.
 
+## Dependency Advisories
+
+Known advisories that have been addressed in this project:
+
+| Advisory | Affected crate | Fixed in mykey |
+|---|---|---|
+| [RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097) — rand unsound with custom logger | `rand` < 0.9 | 0.2.1 (upgraded to rand 0.9) |
+
 ## Reporting a Vulnerability
 
 Please **do not** open a public GitHub issue for security vulnerabilities.

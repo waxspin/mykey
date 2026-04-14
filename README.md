@@ -116,7 +116,7 @@ peer.verify(received_msg.dh_public().unwrap())?;
 | [`hkdf`](https://crates.io/crates/hkdf) | Key derivation |
 | [`base64`](https://crates.io/crates/base64) | SDP `a=key-mgmt:mikey` encoding |
 | [`hex`](https://crates.io/crates/hex) | Identity key file encoding |
-| [`rand`](https://crates.io/crates/rand) + [`rand_core`](https://crates.io/crates/rand_core) | RAND nonce generation; `OsRng` (direct OS entropy) for X25519 keypairs |
+| [`rand`](https://crates.io/crates/rand) ≥ 0.9 + [`rand_core`](https://crates.io/crates/rand_core) | RAND nonce generation; `OsRng` (direct OS entropy) for X25519 keypairs. 0.9+ required to address [RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097). |
 | [`thiserror`](https://crates.io/crates/thiserror) | Error types |
 
 ## License
