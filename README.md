@@ -23,7 +23,7 @@ A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https
 
 ```toml
 [dependencies]
-mykey = "0.2.0"
+mykey = "0.2.1"
 ```
 
 or to get whatever the latest in Crates.io is, just type:
@@ -64,7 +64,7 @@ let keys = initiator.complete(&resp_msg, suite)?;
 use mykey::message::MikeyMessage;
 
 let psk = b"shared-secret-key";
-let rand_bytes = [0x42u8; 16]; // use rand::thread_rng() in practice
+let rand_bytes = [0x42u8; 16]; // use rand::rng() in practice
 let msg = MikeyMessage::new_psk_init(csc_id, ssrc, &rand_bytes, psk)?;
 ```
 
@@ -116,7 +116,7 @@ peer.verify(received_msg.dh_public().unwrap())?;
 | [`hkdf`](https://crates.io/crates/hkdf) | Key derivation |
 | [`base64`](https://crates.io/crates/base64) | SDP `a=key-mgmt:mikey` encoding |
 | [`hex`](https://crates.io/crates/hex) | Identity key file encoding |
-| [`rand`](https://crates.io/crates/rand) | RAND payload and keypair generation |
+| [`rand`](https://crates.io/crates/rand) + [`rand_core`](https://crates.io/crates/rand_core) | RAND nonce generation; `OsRng` (direct OS entropy) for X25519 keypairs |
 | [`thiserror`](https://crates.io/crates/thiserror) | Error types |
 
 ## License
