@@ -66,7 +66,7 @@ pub struct DhKeyPair {
 
 impl DhKeyPair {
     pub fn generate() -> Self {
-        let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
+        let secret = EphemeralSecret::random_from_rng(rand_core::OsRng);
         let public = PublicKey::from(&secret);
         Self { secret, public }
     }

@@ -51,7 +51,7 @@ pub struct Identity {
 impl Identity {
     /// Generate a new random identity
     pub fn generate() -> Self {
-        let secret = StaticSecret::random_from_rng(rand::thread_rng());
+        let secret = StaticSecret::random_from_rng(rand_core::OsRng);
         let public = PublicKey::from(&secret);
         Self { secret, public }
     }
