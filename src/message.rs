@@ -724,7 +724,7 @@ impl DhInitiator {
     pub fn new(csc_id: u32, ssrc: u32) -> Self {
         let mut rand_bytes = vec![0u8; 16];
         use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut rand_bytes);
+        rand::rng().fill_bytes(&mut rand_bytes);
 
         Self {
             keypair: Some(DhKeyPair::generate()),
