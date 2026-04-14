@@ -30,7 +30,7 @@ let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
 // --- Initiator ---
 // Generate a random 16-byte RAND nonce
 let mut rand_bytes = [0u8; 16];
-rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut rand_bytes);
+rand::RngCore::fill_bytes(&mut rand::rng(), &mut rand_bytes);
 
 let init_msg = MikeyMessage::new_psk_init(csc_id, ssrc, &rand_bytes, psk)?;
 let init_bytes = init_msg.to_bytes().to_vec();

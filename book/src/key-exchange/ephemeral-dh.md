@@ -10,6 +10,8 @@ Ephemeral Diffie-Hellman is the default and recommended key exchange method in m
 
 The RAND ensures that even if the same keypairs were somehow reused, each session produces different key material.
 
+Both the X25519 keypair and the RAND nonce are generated using `OsRng`, which calls the OS CSPRNG directly (via `getrandom`). This is the appropriate source for cryptographic key material — no userspace PRNG state is involved.
+
 ## Basic exchange
 
 ```rust
