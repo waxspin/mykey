@@ -30,7 +30,7 @@ pub enum MikeyError {
         actual: usize,
     },
 
-    /// HMAC-SHA-256 verification failed (wrong PSK or tampered message).
+    /// HMAC-SHA-1-160 verification failed (wrong PSK or tampered message).
     #[error("invalid MAC: verification failed")]
     InvalidMac,
 

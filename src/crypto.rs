@@ -1,11 +1,13 @@
 #![allow(missing_docs)]
 
 use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::error::{MikeyError, Result};
 
+type HmacSha1 = Hmac<Sha1>;
 type HmacSha256 = Hmac<Sha256>;
 
 /// MIKEY PRF (RFC 3830 Section 4.1.2)
@@ -30,15 +32,14 @@ pub fn mikey_prf(key: &[u8], label: &[u8], output_len: usize) -> Result<Vec<u8>>
     Ok(result)
 }
 
-/// Compute HMAC-SHA-256, truncated to 160 bits (20 bytes) per RFC 3830
+/// Compute HMAC-SHA-1-160 (20 bytes) per RFC 3830 Section 6.2
 pub fn compute_mac(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
+    let mut mac = HmacSha1::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
     mac.update(data);
-    let result = mac.finalize().into_bytes();
-    Ok(result[..20].to_vec())
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
-/// Verify HMAC-SHA-256 (truncated to 160 bits)
+/// Verify HMAC-SHA-1-160 per RFC 3830 Section 6.2
 pub fn verify_mac(key: &[u8], data: &[u8], expected: &[u8]) -> Result<()> {
     let computed = compute_mac(key, data)?;
     if computed != expected {
@@ -143,6 +144,20 @@ mod tests {
         let mut mac = compute_mac(key, data).unwrap();
         mac[0] ^= 0xff;
         assert!(verify_mac(key, data, &mac).is_err());
+    }
+
+    /// RFC 2202 test case 1: locks in HMAC-SHA-1 (not truncated HMAC-SHA-256).
+    /// Regression test for the bug where compute_mac used HMAC-SHA-256 truncated
+    /// to 160 bits, which is non-compliant with RFC 3830 §6.2 (MAC alg = 1 →
+    /// HMAC-SHA-1-160).
+    #[test]
+    fn test_mac_is_hmac_sha1_kat() {
+        let key = [0x0bu8; 20];
+        let data = b"Hi There";
+        let expected = hex::decode("b617318655057264e28bc0b6fb378c8ef146be00").unwrap();
+        let mac = compute_mac(&key, data).unwrap();
+        assert_eq!(mac, expected);
+        verify_mac(&key, data, &expected).unwrap();
     }
 
     #[test]

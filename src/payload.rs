@@ -275,7 +275,7 @@ impl MacAlg {
 
     pub fn mac_len(&self) -> usize {
         match self {
-            Self::HmacSha1160 => 20, // truncated to 160 bits per RFC 3830
+            Self::HmacSha1160 => 20, // HMAC-SHA-1-160 per RFC 3830
             Self::Null => 0,
         }
     }
