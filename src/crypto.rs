@@ -46,7 +46,8 @@ pub fn compute_mac(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
 pub fn verify_mac(key: &[u8], data: &[u8], expected: &[u8]) -> Result<()> {
     let mut mac = HmacSha1::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
     mac.update(data);
-    mac.verify_slice(expected).map_err(|_| MikeyError::InvalidMac)
+    mac.verify_slice(expected)
+        .map_err(|_| MikeyError::InvalidMac)
 }
 
 /// Ephemeral X25519 Diffie-Hellman key pair.
