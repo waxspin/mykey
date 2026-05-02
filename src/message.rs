@@ -341,7 +341,7 @@ impl MikeyMessage {
             });
         }
         let next_payload = data[0];
-        // MAC is 20 bytes (HMAC-SHA-256 truncated to 160 bits)
+        // MAC is 20 bytes (HMAC-SHA-1-160 per RFC 3830)
         let mac_len = 20;
         if data.len() < 1 + mac_len {
             return Err(MikeyError::MessageTooShort {
@@ -1089,7 +1089,7 @@ mod tests {
         let msg = MikeyMessage::new_psk_init(1, 0x1111, &rand_bytes, psk).unwrap();
         let original = msg.to_bytes();
 
-        // The last 20 bytes are the appended HMAC-SHA-256 MAC.
+        // The last 20 bytes are the appended HMAC-SHA-1-160 MAC.
         let len = original.len();
         let mac_start = len - 20;
 
