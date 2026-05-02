@@ -1,6 +1,6 @@
 [package]
 name = "mykey"
-version = "0.2.1"
+version = "1.0.0"
 edition = "2021"
 description = "MIKEY (RFC 3830) — Multimedia Internet KEYing for SRTP key exchange"
 license = "MIT OR Apache-2.0"
