@@ -12,7 +12,7 @@ mykey is a cryptographic library. Security issues in this project include:
 - Unsafe handling of private key files (permissions, exposure in logs or errors)
 - Parsing bugs that could cause panics, memory corruption, or acceptance of invalid messages
 
-Issues in downstream dependencies (x25519-dalek, hmac, sha2, aes, rand) should be reported to those projects directly. If you believe a dependency issue has a specific impact on mykey, include that context in your report.
+Issues in upstream dependencies (x25519-dalek, hmac, sha1, rand) should be reported to those projects directly. If you believe a dependency issue has a specific impact on mykey, include that context in your report.
 
 ## Dependency Advisories
 

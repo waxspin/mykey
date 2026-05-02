@@ -23,7 +23,7 @@ A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https
 
 ```toml
 [dependencies]
-mykey = "0.2.1"
+mykey = "1.0.0"
 ```
 
 or to get whatever the latest in Crates.io is, just type:
@@ -111,9 +111,7 @@ peer.verify(received_msg.dh_public().unwrap())?;
 | Crate | Purpose |
 |---|---|
 | [`x25519-dalek`](https://crates.io/crates/x25519-dalek) | X25519 DH key exchange |
-| [`hmac`](https://crates.io/crates/hmac) + [`sha2`](https://crates.io/crates/sha2) | MIKEY PRF and MAC (HMAC-SHA-256) |
-| [`aes`](https://crates.io/crates/aes) + [`ctr`](https://crates.io/crates/ctr) | AES-CM for KEMAC payload encryption |
-| [`hkdf`](https://crates.io/crates/hkdf) | Key derivation |
+| [`hmac`](https://crates.io/crates/hmac) + [`sha1`](https://crates.io/crates/sha1) | MIKEY-1 PRF and KEMAC MAC (HMAC-SHA-1, per RFC 3830) |
 | [`base64`](https://crates.io/crates/base64) | SDP `a=key-mgmt:mikey` encoding |
 | [`hex`](https://crates.io/crates/hex) | Identity key file encoding |
 | [`rand`](https://crates.io/crates/rand) ≥ 0.9 + [`rand_core`](https://crates.io/crates/rand_core) | RAND nonce generation; `OsRng` (direct OS entropy) for X25519 keypairs. 0.9+ required to address [RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097). |

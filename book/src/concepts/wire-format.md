@@ -24,7 +24,7 @@ Every MIKEY message starts with a common header (RFC 3830 §6.1).
 | `data type` | `4` = DH-Init, `5` = DH-Resp, `0` = PSK-Init |
 | `next payload` | Type of the first payload that follows |
 | `V` flag | Set when a verification payload is present |
-| `PRF func` | `0` = MIKEY-PRF-HMAC-SHA-256 |
+| `PRF func` | `0` = MIKEY-1 PRF (HMAC-SHA-1) — the only PRF defined in RFC 3830 |
 | `CSB ID` | Crypto Session Bundle ID — identifies the session |
 
 The CS ID map (when `#CS > 0` and `CS ID map type = 0`) adds 9 bytes per crypto session:
@@ -76,7 +76,7 @@ The DH-value length is **implied by the group** — there is no explicit length 
 !  mac_alg (8)  !  MAC (mac_alg_len bytes)                     ~
 ```
 
-Used in PSK mode to carry the TGK. `enc_alg = 0` means null encryption (plaintext TGK). `mac_alg = 0` means HMAC-SHA-256 truncated to 160 bits.
+Used in PSK mode to carry the TGK. `enc_alg = 0` means null encryption (plaintext TGK). `mac_alg = 0` means no MAC (NULL); `mac_alg = 1` means HMAC-SHA-1-160 — the mandatory MAC algorithm per RFC 3830 §6.2.
 
 ### Security Policy (type 10)
 

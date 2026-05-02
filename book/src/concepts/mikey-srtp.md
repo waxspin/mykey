@@ -21,7 +21,7 @@ MIKEY messages are compact binary structures designed for embedding in SDP sessi
 
 1. **Negotiates a TGK** (TEK Generation Key) using one of several key exchange methods
 2. **Carries a RAND** payload — a fresh random nonce per session
-3. **Derives SRTP keys** from TGK + RAND using the MIKEY PRF (HMAC-SHA-256 based)
+3. **Derives SRTP keys** from TGK + RAND using the MIKEY-1 PRF (HMAC-SHA-1 based)
 4. **Carries security policy** — tells the peer which SRTP cipher and authentication algorithm to use
 
 ### What MIKEY does not do
@@ -32,10 +32,10 @@ MIKEY messages are compact binary structures designed for embedding in SDP sessi
 
 ## The MIKEY PRF
 
-The key derivation in mykey follows RFC 3830 Section 4.1.2. Given a key and a label, it produces an output of arbitrary length using iterated HMAC-SHA-256:
+The key derivation in mykey follows RFC 3830 Section 4.1.2. Given a key and a label, it produces an output of arbitrary length using iterated HMAC-SHA-1:
 
 ```text
-PRF(key, label) = HMAC-SHA-256(key, label || 0x00 || i || output_len)
+PRF(key, label) = HMAC-SHA-1(key, label || 0x00 || i || output_len)
                   for i = 0, 1, 2, ... until enough bytes are produced
 ```
 
