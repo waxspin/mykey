@@ -2,23 +2,21 @@
 
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
-use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::error::{MikeyError, Result};
 
 type HmacSha1 = Hmac<Sha1>;
-type HmacSha256 = Hmac<Sha256>;
 
-/// MIKEY PRF (RFC 3830 Section 4.1.2)
-/// PRF(key, label) = HMAC-SHA-256(key, label || 0x00 || iter || length)
+/// MIKEY-1 PRF (RFC 3830 Section 4.1.2)
+/// PRF(key, label) = HMAC-SHA-1(key, label || 0x00 || iter || length)
 pub fn mikey_prf(key: &[u8], label: &[u8], output_len: usize) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(output_len);
-    let iterations = output_len.div_ceil(32); // SHA-256 output = 32 bytes
+    let iterations = output_len.div_ceil(20); // SHA-1 output = 20 bytes
 
     for i in 0..iterations {
         let mut mac =
-            HmacSha256::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
+            HmacSha1::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
 
         mac.update(label);
         mac.update(&[0x00]); // separator
@@ -128,6 +126,50 @@ mod tests {
         let out48 = mikey_prf(key, label, 48).unwrap();
         assert_eq!(out16.len(), 16);
         assert_eq!(out48.len(), 48);
+    }
+
+    /// Regression test: locks in HMAC-SHA-1 as the PRF primitive (not HMAC-SHA-256).
+    /// Independently computes one PRF iteration via HMAC-SHA-1 and asserts equality.
+    /// RFC 3830 §4.1.4 specifies MIKEY-1 PRF over HMAC-SHA-1.
+    #[test]
+    fn test_prf_uses_hmac_sha1_single_block() {
+        let key = [0x0bu8; 20];
+        let label = b"prf-test";
+        let output_len = 20usize;
+
+        let mut mac = HmacSha1::new_from_slice(&key).unwrap();
+        mac.update(label);
+        mac.update(&[0x00]);
+        mac.update(&0u8.to_be_bytes());
+        mac.update(&(output_len as u16).to_be_bytes());
+        let expected: Vec<u8> = mac.finalize().into_bytes().to_vec();
+
+        let actual = mikey_prf(&key, label, output_len).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Locks in the multi-iteration assembly: asks for output longer than one
+    /// HMAC-SHA-1 block (20 bytes) and asserts the iteration loop concatenates
+    /// blocks correctly with the expected counter values.
+    #[test]
+    fn test_prf_multi_block_assembly() {
+        let key = b"prf_test_key_for_multi_block";
+        let label = b"label";
+        let output_len = 48usize; // requires 3 iterations of 20-byte HMAC-SHA-1
+
+        let mut combined = Vec::new();
+        for i in 0..3u8 {
+            let mut mac = HmacSha1::new_from_slice(key).unwrap();
+            mac.update(label);
+            mac.update(&[0x00]);
+            mac.update(&i.to_be_bytes());
+            mac.update(&(output_len as u16).to_be_bytes());
+            combined.extend_from_slice(&mac.finalize().into_bytes());
+        }
+        combined.truncate(output_len);
+
+        let actual = mikey_prf(key, label, output_len).unwrap();
+        assert_eq!(actual, combined);
     }
 
     #[test]

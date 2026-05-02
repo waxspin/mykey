@@ -124,13 +124,13 @@ impl DataType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PrfFunc {
-    MikeyPrfHmacSha256 = 0,
+    MikeyPrfHmacSha1 = 0,
 }
 
 impl PrfFunc {
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(Self::MikeyPrfHmacSha256),
+            0 => Some(Self::MikeyPrfHmacSha1),
             _ => None,
         }
     }
