@@ -154,8 +154,7 @@ mod tests {
     fn test_mac_is_hmac_sha1_kat() {
         let key = [0x0bu8; 20];
         let data = b"Hi There";
-        let expected =
-            hex::decode("b617318655057264e28bc0b6fb378c8ef146be00").unwrap();
+        let expected = hex::decode("b617318655057264e28bc0b6fb378c8ef146be00").unwrap();
         let mac = compute_mac(&key, data).unwrap();
         assert_eq!(mac, expected);
         verify_mac(&key, data, &expected).unwrap();
