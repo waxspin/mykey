@@ -284,30 +284,33 @@ impl MikeyMessage {
     }
 
     fn parse_sp(data: &[u8]) -> Result<(Payload, usize)> {
-        // Wire: next_payload(1) | policy_no(1) | prot_type(1) | policy_params(TLV...)
-        if data.len() < 3 {
+        // Wire: next_payload(1) | policy_no(1) | proto_type(1) | policy_param_length(2) | params(...)
+        if data.len() < 5 {
             return Err(MikeyError::MessageTooShort {
-                expected: 3,
+                expected: 5,
                 actual: data.len(),
             });
         }
         let next_payload = data[0];
         let policy_no = data[1];
         let proto_type = data[2];
+        let _params_len = u16::from_be_bytes([data[3], data[4]]) as usize;
 
         // Read TLV params greedily. We stop when we can't form a valid TLV
         // (need at least 2 bytes for type+length) or when the param type
         // is outside the SRTP range (0-12).
         let mut params = Vec::new();
-        let mut pos = 3;
-        while pos + 2 <= data.len() {
+        let mut pos = 5;
+        while pos < 5 + _params_len && pos + 2 <= data.len() {
             let param_type = data[pos];
             let param_len = data[pos + 1];
             // SRTP param types are 0-12; anything else signals end of SP
             if param_type > 12 {
                 break;
             }
-            if pos + 2 + param_len as usize > data.len() {
+            if pos + 2 + param_len as usize > 5 + _params_len
+                || pos + 2 + param_len as usize > data.len()
+            {
                 break;
             }
             let param_value = data[pos + 2..pos + 2 + param_len as usize].to_vec();
@@ -541,7 +544,7 @@ impl MikeyMessage {
         let kemac = KemacPayload {
             next_payload: PayloadType::Last as u8,
             enc_alg: EncAlg::Null,
-            mac_alg: MacAlg::HmacSha256,
+            mac_alg: MacAlg::HmacSha1160,
             enc_data: tgk.clone(),
             mac: vec![], // placeholder — computed below
         };
@@ -685,9 +688,12 @@ impl MikeyMessage {
                 buf.extend_from_slice(&id.id_data);
             }
             Payload::Sp(sp) => {
+                // Wire: next_payload(1) | policy_no(1) | proto_type(1) | policy_param_length(2) | params(...)
                 buf.push(sp.next_payload);
                 buf.push(sp.policy_no);
                 buf.push(sp.proto_type);
+                let params_len: usize = sp.params.iter().map(|p| 2 + p.param_len as usize).sum();
+                buf.extend_from_slice(&(params_len as u16).to_be_bytes());
                 for param in &sp.params {
                     buf.push(param.param_type);
                     buf.push(param.param_len);
