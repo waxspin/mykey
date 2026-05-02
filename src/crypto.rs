@@ -39,13 +39,14 @@ pub fn compute_mac(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-/// Verify HMAC-SHA-1-160 per RFC 3830 Section 6.2
+/// Verify HMAC-SHA-1-160 per RFC 3830 Section 6.2.
+///
+/// Uses constant-time comparison to avoid leaking byte-position information
+/// about a forged MAC via response timing.
 pub fn verify_mac(key: &[u8], data: &[u8], expected: &[u8]) -> Result<()> {
-    let computed = compute_mac(key, data)?;
-    if computed != expected {
-        return Err(MikeyError::InvalidMac);
-    }
-    Ok(())
+    let mut mac = HmacSha1::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
+    mac.update(data);
+    mac.verify_slice(expected).map_err(|_| MikeyError::InvalidMac)
 }
 
 /// Ephemeral X25519 Diffie-Hellman key pair.
@@ -144,6 +145,19 @@ mod tests {
         let mut mac = compute_mac(key, data).unwrap();
         mac[0] ^= 0xff;
         assert!(verify_mac(key, data, &mac).is_err());
+    }
+
+    #[test]
+    fn test_mac_wrong_length_rejected() {
+        let key = b"mac_key_for_test";
+        let data = b"some data";
+        let mac = compute_mac(key, data).unwrap();
+        // Truncate to 19 bytes — must be rejected, not silently accepted.
+        assert!(verify_mac(key, data, &mac[..19]).is_err());
+        // Append a byte — must also be rejected.
+        let mut too_long = mac.clone();
+        too_long.push(0x00);
+        assert!(verify_mac(key, data, &too_long).is_err());
     }
 
     /// RFC 2202 test case 1: locks in HMAC-SHA-1 (not truncated HMAC-SHA-256).
