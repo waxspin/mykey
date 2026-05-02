@@ -544,7 +544,7 @@ impl MikeyMessage {
         let kemac = KemacPayload {
             next_payload: PayloadType::Last as u8,
             enc_alg: EncAlg::Null,
-            mac_alg: MacAlg::HmacSha256,
+            mac_alg: MacAlg::HmacSha1160,
             enc_data: tgk.clone(),
             mac: vec![], // placeholder — computed below
         };
