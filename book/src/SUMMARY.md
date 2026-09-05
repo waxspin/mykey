@@ -9,6 +9,7 @@
 - [MIKEY & SRTP](concepts/mikey-srtp.md)
 - [Key Exchange Modes](concepts/key-exchange-modes.md)
 - [Wire Format](concepts/wire-format.md)
+- [Deviations from RFC 3830](concepts/rfc-deviations.md)
 
 # Key Exchange
 

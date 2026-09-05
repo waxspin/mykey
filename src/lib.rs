@@ -35,6 +35,17 @@
 //! - SAP integration with SDP `a=key-mgmt:mikey` attribute ([RFC 4567])
 //! - Message parsing and serialization (wire format)
 //!
+//! ## Interoperability
+//!
+//! mykey is not a complete MIKEY implementation. The PRF and key derivation
+//! follow [RFC 3830] §4.1, but DH mode uses X25519 and omits the SIGN payload
+//! the RFC requires, and PSK mode does not yet encrypt the KEMAC. Every known
+//! departure is catalogued in the [Deviations from RFC 3830] chapter of the
+//! book — read it before assuming a mykey exchange will interoperate with
+//! another MIKEY stack.
+//!
+//! [Deviations from RFC 3830]: https://waxspin.github.io/mykey/concepts/rfc-deviations.html
+//!
 //! [RFC 4567]: https://datatracker.ietf.org/doc/rfc4567/
 
 /// MIKEY PRF, DH key pair, and MAC primitives.

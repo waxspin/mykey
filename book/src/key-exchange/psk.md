@@ -2,6 +2,8 @@
 
 PSK mode uses a secret key that both sides already know before the session begins. The TGK is derived from the shared key and RAND using the MIKEY PRF, and a MAC over the message authenticates the exchange. There is no DH negotiation.
 
+> **Warning:** PSK mode is currently **not confidential and not authenticated**. `new_psk_init` places the TGK in the KEMAC payload in the clear, so anyone who can read the message can recover the SRTP master key without knowing the PSK; and no receive path verifies the message MAC. Do not send a mykey PSK-Init over any channel you would not be willing to send the SRTP master key over directly. See [Deviations from RFC 3830](../concepts/rfc-deviations.md).
+
 ## When to use PSK
 
 PSK mode is the right choice when:
@@ -76,9 +78,12 @@ Never transmit a PSK over the same network path that carries the SRTP media stre
 | Property | PSK |
 |---|---|
 | Forward secrecy | No — PSK compromise exposes all sessions |
-| Mutual authentication | Yes — both sides must know the PSK to produce a valid MAC |
-| MITM protection | Yes — assuming PSK distribution was secure |
-| Replay protection | RAND nonce prevents replay of the same init message |
+| Key confidentiality | **No** — the TGK is sent in the clear in the KEMAC payload |
+| Mutual authentication | **No** — a MAC is computed and appended, but no receive path verifies it |
+| MITM protection | **No** — follows from the above |
+| Replay protection | Partial — a fresh RAND gives each session distinct keys, but nothing tracks or rejects a replayed init message |
+
+The first three are implementation gaps, not properties of the RFC's PSK method, which encrypts the TGK under a key derived from the PSK (§4.1.4) and verifies the MAC on receipt. Until they are closed, treat PSK mode as providing key *agreement* only, on an already-secure channel.
 
 ## Comparison with ephemeral DH
 
