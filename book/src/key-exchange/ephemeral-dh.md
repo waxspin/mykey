@@ -126,3 +126,5 @@ println!("master_salt: {}", hex::encode(&keys.master_salt));
 Ephemeral DH alone does not verify that you are exchanging keys with the intended peer. An attacker on the network who can intercept and replace packets could substitute their own DH public key and negotiate separate keys with each side.
 
 For isolated networks (dedicated AES67 VLANs, physically secured infrastructure) this is typically not a concern. For shared or open networks, add peer key pinning — see [Identity & Peer Pinning](../identity/overview.md).
+
+RFC 3830's own DH method closes this gap with a SIGN payload instead, which mykey does not implement; that and the use of X25519 in place of OAKLEY 5 mean DH mode will not interoperate with a compliant MIKEY implementation. See [Deviations from RFC 3830](../concepts/rfc-deviations.md).

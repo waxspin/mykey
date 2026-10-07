@@ -536,9 +536,10 @@ impl MikeyMessage {
             rand: rand_bytes.to_vec(),
         };
 
-        // Derive TGK from PSK
+        // Derive TGK from PSK. The message authentication key comes from the PSK
+        // itself (RFC 3830 §4.1.4), not from the TGK.
         let tgk = crypto::derive_tgk(psk, rand_bytes, 32)?;
-        let auth_key = crypto::derive_auth_key(&tgk, rand_bytes, 32)?;
+        let auth_key = crypto::derive_auth_key(psk, csc_id, rand_bytes, 32)?;
 
         // KEMAC with null encryption (TGK sent as key data)
         let kemac = KemacPayload {
@@ -585,7 +586,7 @@ impl MikeyMessage {
             .rand_bytes()
             .ok_or(MikeyError::MissingPayload("RAND"))?;
         let tgk = crypto::derive_tgk(psk, rand, 32)?;
-        srtp::derive_srtp_keys(&tgk, rand, 0, suite)
+        srtp::derive_srtp_keys(&tgk, rand, 0, self.header.csc_id, suite)
     }
 
     /// Get the RAND bytes from this message
@@ -791,7 +792,7 @@ impl DhInitiator {
         let shared_secret = keypair.diffie_hellman(&peer_bytes);
         let tgk = crypto::derive_tgk(&shared_secret, &self.rand_bytes, 32)?;
 
-        srtp::derive_srtp_keys(&tgk, &self.rand_bytes, 0, suite)
+        srtp::derive_srtp_keys(&tgk, &self.rand_bytes, 0, self.csc_id, suite)
     }
 }
 
@@ -853,7 +854,8 @@ impl DhResponder {
         let shared_secret = keypair.diffie_hellman(&peer_bytes);
         let tgk = crypto::derive_tgk(&shared_secret, rand, 32)?;
 
-        srtp::derive_srtp_keys(&tgk, rand, 0, suite)
+        // The CSB ID is chosen by the initiator and carried in its header.
+        srtp::derive_srtp_keys(&tgk, rand, 0, init.header.csc_id, suite)
     }
 }
 
@@ -904,8 +906,8 @@ mod tests {
         let tgk_b = crypto::derive_tgk(&shared_b, &rand, 32).unwrap();
         assert_eq!(tgk_a, tgk_b);
 
-        let keys_a = srtp::derive_srtp_keys(&tgk_a, &rand, 0, suite).unwrap();
-        let keys_b = srtp::derive_srtp_keys(&tgk_b, &rand, 0, suite).unwrap();
+        let keys_a = srtp::derive_srtp_keys(&tgk_a, &rand, 0, 1, suite).unwrap();
+        let keys_b = srtp::derive_srtp_keys(&tgk_b, &rand, 0, 1, suite).unwrap();
 
         assert_eq!(keys_a.master_key, keys_b.master_key);
         assert_eq!(keys_a.master_salt, keys_b.master_salt);
@@ -1093,9 +1095,9 @@ mod tests {
         let len = original.len();
         let mac_start = len - 20;
 
-        // Derive auth_key the same way new_psk_init does.
-        let tgk = crypto::derive_tgk(psk, &rand_bytes, 32).unwrap();
-        let auth_key = crypto::derive_auth_key(&tgk, &rand_bytes, 32).unwrap();
+        // Derive auth_key the same way new_psk_init does: from the PSK and the
+        // CSB ID passed to the builder above, per RFC 3830 §4.1.4.
+        let auth_key = crypto::derive_auth_key(psk, 1, &rand_bytes, 32).unwrap();
 
         // Original message verifies correctly.
         crypto::verify_mac(&auth_key, &original[..mac_start], &original[mac_start..]).unwrap();
@@ -1117,10 +1119,10 @@ mod tests {
         let tgk_b = crypto::derive_tgk(psk, &rand_b, 32).unwrap();
 
         let keys_a =
-            srtp::derive_srtp_keys(&tgk_a, &rand_a, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+            srtp::derive_srtp_keys(&tgk_a, &rand_a, 0, 1, SrtpCryptoSuite::AES_128_CM_SHA1_80)
                 .unwrap();
         let keys_b =
-            srtp::derive_srtp_keys(&tgk_b, &rand_b, 0, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+            srtp::derive_srtp_keys(&tgk_b, &rand_b, 0, 1, SrtpCryptoSuite::AES_128_CM_SHA1_80)
                 .unwrap();
 
         assert_ne!(keys_a.master_key, keys_b.master_key);

@@ -8,26 +8,68 @@ use crate::error::{MikeyError, Result};
 
 type HmacSha1 = Hmac<Sha1>;
 
-/// MIKEY-1 PRF (RFC 3830 Section 4.1.2)
-/// PRF(key, label) = HMAC-SHA-1(key, label || 0x00 || iter || length)
-pub fn mikey_prf(key: &[u8], label: &[u8], output_len: usize) -> Result<Vec<u8>> {
-    let mut result = Vec::with_capacity(output_len);
-    let iterations = output_len.div_ceil(20); // SHA-1 output = 20 bytes
+/// SHA-1 output size in bytes (160 bits) — the PRF's output block size.
+const SHA1_OUT_LEN: usize = 20;
 
-    for i in 0..iterations {
-        let mut mac =
-            HmacSha1::new_from_slice(key).map_err(|e| MikeyError::Crypto(e.to_string()))?;
+/// PRF input-key block size in bytes (256 bits), per RFC 3830 §4.1.2.
+const PRF_BLOCK_LEN: usize = 32;
 
-        mac.update(label);
-        mac.update(&[0x00]); // separator
-        mac.update(&(i as u8).to_be_bytes());
-        mac.update(&(output_len as u16).to_be_bytes());
+/// The P-function of RFC 3830 §4.1.2, defined similarly to TLS:
+///
+/// ```text
+/// P(s, label, m) = HMAC(s, A_1 || label) || HMAC(s, A_2 || label) || ...
+///                                        || HMAC(s, A_m || label)
+///     where A_0 = label,  A_i = HMAC(s, A_(i-1))
+/// ```
+///
+/// Note the feedback: each `A_i` is the HMAC of the *previous* `A`, so blocks
+/// cannot be computed independently.
+fn p_func(s: &[u8], label: &[u8], m: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(m * SHA1_OUT_LEN);
+    let mut a = label.to_vec(); // A_0 = label
 
-        result.extend_from_slice(&mac.finalize().into_bytes());
+    for _ in 0..m {
+        a = compute_mac(s, &a)?; // A_i = HMAC(s, A_(i-1))
+
+        let mut block = a.clone();
+        block.extend_from_slice(label);
+        out.extend_from_slice(&compute_mac(s, &block)?); // HMAC(s, A_i || label)
     }
 
-    result.truncate(output_len);
-    Ok(result)
+    Ok(out)
+}
+
+/// MIKEY-1 default PRF (RFC 3830 §4.1.2).
+///
+/// The input key is split into 256-bit blocks `inkey = s_1 || ... || s_n`; the
+/// output is the `outkey_len` most significant bytes of
+///
+/// ```text
+/// PRF(inkey, label) = P(s_1, label, m) XOR ... XOR P(s_n, label, m)
+/// ```
+///
+/// where `m = outkey_len / 160 bits`, rounded up.
+///
+/// # Errors
+///
+/// Returns [`MikeyError::Crypto`] if `inkey` is empty. An empty input key would
+/// otherwise produce no `P` terms at all and silently return an all-zero key.
+pub fn mikey_prf(inkey: &[u8], label: &[u8], outkey_len: usize) -> Result<Vec<u8>> {
+    if inkey.is_empty() {
+        return Err(MikeyError::Crypto("PRF input key is empty".into()));
+    }
+
+    let m = outkey_len.div_ceil(SHA1_OUT_LEN);
+    let mut outkey = vec![0u8; m * SHA1_OUT_LEN];
+
+    for s in inkey.chunks(PRF_BLOCK_LEN) {
+        for (acc, byte) in outkey.iter_mut().zip(p_func(s, label, m)?) {
+            *acc ^= byte;
+        }
+    }
+
+    outkey.truncate(outkey_len);
+    Ok(outkey)
 }
 
 /// Compute HMAC-SHA-1-160 (20 bytes) per RFC 3830 Section 6.2
@@ -80,28 +122,83 @@ impl DhKeyPair {
     }
 }
 
-/// Derive TGK (TEK Generation Key) from DH shared secret and RAND
-/// using the MIKEY PRF
-pub fn derive_tgk(shared_secret: &[u8], rand: &[u8], tgk_len: usize) -> Result<Vec<u8>> {
-    // s = shared_secret
-    // TGK = PRF(s, label="TGK" || RAND, tgk_len)
+// ── Key-derivation label constants ───────────────────────────────────────────
+//
+// The 32-bit constants below are taken from consecutive nine-digit chunks of the
+// decimal expansion of e, as specified by RFC 3830 (e.g. 718281828 = 0x2AD01C64).
+
+/// Constant for deriving a TEK from a TGK (RFC 3830 §4.1.3).
+pub const CONST_TEK: u32 = 0x2AD0_1C64;
+/// Constant for deriving an authentication key from a TGK (RFC 3830 §4.1.3).
+pub const CONST_AUTH_FROM_TGK: u32 = 0x1B5C_7973;
+/// Constant for deriving an encryption key from a TGK (RFC 3830 §4.1.3).
+pub const CONST_ENC_FROM_TGK: u32 = 0x1579_8CEF;
+/// Constant for deriving a salting key from a TGK (RFC 3830 §4.1.3).
+pub const CONST_SALT_FROM_TGK: u32 = 0x39A2_C14B;
+
+/// Constant for deriving an encryption key from an envelope/pre-shared key
+/// (RFC 3830 §4.1.4).
+pub const CONST_ENC_FROM_PSK: u32 = 0x1505_33E1;
+/// Constant for deriving an authentication key from an envelope/pre-shared key
+/// (RFC 3830 §4.1.4).
+pub const CONST_AUTH_FROM_PSK: u32 = 0x2D22_AC75;
+/// Constant for deriving a salt key from an envelope/pre-shared key
+/// (RFC 3830 §4.1.4).
+pub const CONST_SALT_FROM_PSK: u32 = 0x29B8_8916;
+
+/// Build the PRF label for a key derived from a TGK (RFC 3830 §4.1.3):
+/// `constant || cs_id || csb_id || RAND`.
+pub fn label_from_tgk(constant: u32, cs_id: u8, csb_id: u32, rand: &[u8]) -> Vec<u8> {
+    let mut label = Vec::with_capacity(9 + rand.len());
+    label.extend_from_slice(&constant.to_be_bytes());
+    label.push(cs_id);
+    label.extend_from_slice(&csb_id.to_be_bytes());
+    label.extend_from_slice(rand);
+    label
+}
+
+/// Build the PRF label for a key derived from an envelope or pre-shared key
+/// (RFC 3830 §4.1.4): `constant || 0xFF || csb_id || RAND`.
+///
+/// The `0xFF` sits in the `cs_id` position: these keys protect the MIKEY message
+/// itself, so unlike TGK-derived keys they are not bound to a single crypto
+/// session.
+pub fn label_from_psk(constant: u32, csb_id: u32, rand: &[u8]) -> Vec<u8> {
+    label_from_tgk(constant, 0xFF, csb_id, rand)
+}
+
+/// Derive a TGK (TEK Generation Key) from a DH shared secret or pre-shared key.
+///
+/// **This is a deliberate deviation from RFC 3830**, which has no such step: in
+/// the DH method the TGK *is* the raw DH result (§3.3), and in the pre-shared
+/// key method the TGK is transported inside KEMAC rather than derived (§3.1).
+/// mykey runs the input through the PRF instead, because a raw X25519 shared
+/// secret should not be used directly as key material. Consequently this label
+/// has no RFC constant. See the "Deviations from RFC 3830" chapter of the book.
+pub fn derive_tgk(inkey: &[u8], rand: &[u8], tgk_len: usize) -> Result<Vec<u8>> {
+    // TGK = PRF(inkey, "TGK" || RAND, tgk_len)
     let mut label = b"TGK".to_vec();
     label.extend_from_slice(rand);
-    mikey_prf(shared_secret, &label, tgk_len)
+    mikey_prf(inkey, &label, tgk_len)
 }
 
-/// Derive auth_key from TGK for MAC computation
-pub fn derive_auth_key(tgk: &[u8], rand: &[u8], auth_key_len: usize) -> Result<Vec<u8>> {
-    let mut label = b"AUTH".to_vec();
-    label.extend_from_slice(rand);
-    mikey_prf(tgk, &label, auth_key_len)
+/// Derive the MIKEY message authentication key from an envelope or pre-shared
+/// key, per RFC 3830 §4.1.4.
+pub fn derive_auth_key(
+    psk: &[u8],
+    csb_id: u32,
+    rand: &[u8],
+    auth_key_len: usize,
+) -> Result<Vec<u8>> {
+    let label = label_from_psk(CONST_AUTH_FROM_PSK, csb_id, rand);
+    mikey_prf(psk, &label, auth_key_len)
 }
 
-/// Derive encryption key from TGK for KEMAC payload encryption
-pub fn derive_enc_key(tgk: &[u8], rand: &[u8], enc_key_len: usize) -> Result<Vec<u8>> {
-    let mut label = b"ENC".to_vec();
-    label.extend_from_slice(rand);
-    mikey_prf(tgk, &label, enc_key_len)
+/// Derive the KEMAC payload encryption key from an envelope or pre-shared key,
+/// per RFC 3830 §4.1.4.
+pub fn derive_enc_key(psk: &[u8], csb_id: u32, rand: &[u8], enc_key_len: usize) -> Result<Vec<u8>> {
+    let label = label_from_psk(CONST_ENC_FROM_PSK, csb_id, rand);
+    mikey_prf(psk, &label, enc_key_len)
 }
 
 #[cfg(test)]
@@ -128,48 +225,136 @@ mod tests {
         assert_eq!(out48.len(), 48);
     }
 
-    /// Regression test: locks in HMAC-SHA-1 as the PRF primitive (not HMAC-SHA-256).
-    /// Independently computes one PRF iteration via HMAC-SHA-1 and asserts equality.
-    /// RFC 3830 §4.1.4 specifies MIKEY-1 PRF over HMAC-SHA-1.
-    #[test]
-    fn test_prf_uses_hmac_sha1_single_block() {
-        let key = [0x0bu8; 20];
-        let label = b"prf-test";
-        let output_len = 20usize;
+    /// Independent reimplementation of the RFC 3830 §4.1.2 P-function, written
+    /// straight from the RFC text rather than from `p_func`, so that the two
+    /// cannot drift into agreement by sharing a bug.
+    fn reference_p(s: &[u8], label: &[u8], m: usize) -> Vec<u8> {
+        let hmac = |key: &[u8], data: &[u8]| -> Vec<u8> {
+            let mut mac = HmacSha1::new_from_slice(key).unwrap();
+            mac.update(data);
+            mac.finalize().into_bytes().to_vec()
+        };
 
-        let mut mac = HmacSha1::new_from_slice(&key).unwrap();
-        mac.update(label);
-        mac.update(&[0x00]);
-        mac.update(&0u8.to_be_bytes());
-        mac.update(&(output_len as u16).to_be_bytes());
-        let expected: Vec<u8> = mac.finalize().into_bytes().to_vec();
-
-        let actual = mikey_prf(&key, label, output_len).unwrap();
-        assert_eq!(actual, expected);
+        let mut out = Vec::new();
+        let mut a = label.to_vec();
+        for _ in 0..m {
+            a = hmac(s, &a);
+            let mut input = a.clone();
+            input.extend_from_slice(label);
+            out.extend_from_slice(&hmac(s, &input));
+        }
+        out
     }
 
-    /// Locks in the multi-iteration assembly: asks for output longer than one
-    /// HMAC-SHA-1 block (20 bytes) and asserts the iteration loop concatenates
-    /// blocks correctly with the expected counter values.
+    /// Locks in the feedback construction of RFC 3830 §4.1.2 for a single-block
+    /// input key. Regression test for the counter-mode PRF (issue #22), which
+    /// computed `HMAC(key, label || 0x00 || i || len)` per block instead.
     #[test]
-    fn test_prf_multi_block_assembly() {
-        let key = b"prf_test_key_for_multi_block";
-        let label = b"label";
-        let output_len = 48usize; // requires 3 iterations of 20-byte HMAC-SHA-1
+    fn test_prf_matches_rfc_p_function() {
+        let key = [0x0bu8; 20]; // < 32 bytes, so exactly one s_i block
+        let label = b"prf-test";
 
-        let mut combined = Vec::new();
-        for i in 0..3u8 {
-            let mut mac = HmacSha1::new_from_slice(key).unwrap();
-            mac.update(label);
-            mac.update(&[0x00]);
-            mac.update(&i.to_be_bytes());
-            mac.update(&(output_len as u16).to_be_bytes());
-            combined.extend_from_slice(&mac.finalize().into_bytes());
+        for &outkey_len in &[16usize, 20, 48] {
+            let mut expected = reference_p(&key, label, outkey_len.div_ceil(20));
+            expected.truncate(outkey_len);
+
+            assert_eq!(mikey_prf(&key, label, outkey_len).unwrap(), expected);
         }
-        combined.truncate(output_len);
+    }
 
-        let actual = mikey_prf(key, label, output_len).unwrap();
-        assert_eq!(actual, combined);
+    /// Locks in the input-key splitting and XOR combination: an input key longer
+    /// than 256 bits must be split into `s_1 || s_2` and the two P-function
+    /// outputs XORed together.
+    #[test]
+    fn test_prf_splits_and_xors_long_inkey() {
+        let mut key = vec![0xA5u8; 32];
+        key.extend_from_slice(&[0x5Au8; 12]); // 44 bytes => two blocks
+        let label = b"split-test";
+        let outkey_len = 20usize;
+
+        let p1 = reference_p(&key[..32], label, 1);
+        let p2 = reference_p(&key[32..], label, 1);
+        let expected: Vec<u8> = p1.iter().zip(&p2).map(|(a, b)| a ^ b).collect();
+
+        assert_eq!(mikey_prf(&key, label, outkey_len).unwrap(), expected);
+
+        // The XOR must actually mix in the second block.
+        let mut truncated = mikey_prf(&key[..32], label, outkey_len).unwrap();
+        truncated.truncate(outkey_len);
+        assert_ne!(mikey_prf(&key, label, outkey_len).unwrap(), truncated);
+    }
+
+    /// An empty input key would produce no P terms and silently yield an
+    /// all-zero output key; it must be rejected instead.
+    #[test]
+    fn test_prf_rejects_empty_inkey() {
+        assert!(mikey_prf(&[], b"label", 16).is_err());
+    }
+
+    /// The old counter-mode PRF repeated its keystream every 256 blocks because
+    /// the block counter was truncated to `u8`. The feedback construction has no
+    /// counter, so long outputs must not repeat.
+    #[test]
+    fn test_prf_long_output_does_not_repeat() {
+        let out = mikey_prf(b"k", b"L", 5140).unwrap();
+        assert_ne!(&out[0..20], &out[5120..5140]);
+    }
+
+    /// Locks in the RFC 3830 §4.1.3 label layout: `constant || cs_id || csb_id || RAND`.
+    #[test]
+    fn test_label_from_tgk_layout() {
+        let label = label_from_tgk(CONST_TEK, 0x07, 0xDEAD_BEEF, &[0x11, 0x22]);
+        assert_eq!(
+            label,
+            vec![0x2A, 0xD0, 0x1C, 0x64, 0x07, 0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22]
+        );
+    }
+
+    /// Locks in the RFC 3830 §4.1.4 label layout: `constant || 0xFF || csb_id || RAND`.
+    #[test]
+    fn test_label_from_psk_layout() {
+        let label = label_from_psk(CONST_AUTH_FROM_PSK, 0x0000_0001, &[0x33]);
+        assert_eq!(
+            label,
+            vec![0x2D, 0x22, 0xAC, 0x75, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x33]
+        );
+    }
+
+    /// The constants are the decimal digits of e, in nine-digit chunks.
+    #[test]
+    fn test_label_constants_match_rfc_tables() {
+        assert_eq!(CONST_TEK, 718_281_828);
+        assert_eq!(CONST_AUTH_FROM_TGK, 0x1B5C_7973);
+        assert_eq!(CONST_ENC_FROM_TGK, 0x1579_8CEF);
+        assert_eq!(CONST_SALT_FROM_TGK, 0x39A2_C14B);
+        assert_eq!(CONST_ENC_FROM_PSK, 0x1505_33E1);
+        assert_eq!(CONST_AUTH_FROM_PSK, 0x2D22_AC75);
+        assert_eq!(CONST_SALT_FROM_PSK, 0x29B8_8916);
+    }
+
+    /// Distinct key types must not collide, and both `cs_id` and `csb_id` must
+    /// actually reach the derived key.
+    #[test]
+    fn test_derived_keys_are_domain_separated() {
+        let psk = b"pre-shared-key";
+        let rand = [0x42u8; 16];
+
+        let auth = derive_auth_key(psk, 1, &rand, 32).unwrap();
+        let enc = derive_enc_key(psk, 1, &rand, 32).unwrap();
+        assert_ne!(auth, enc, "auth and enc keys must differ");
+
+        assert_ne!(
+            auth,
+            derive_auth_key(psk, 2, &rand, 32).unwrap(),
+            "csb_id must be bound into the key"
+        );
+
+        let tgk = [0x99u8; 32];
+        assert_ne!(
+            mikey_prf(&tgk, &label_from_tgk(CONST_TEK, 0, 1, &rand), 16).unwrap(),
+            mikey_prf(&tgk, &label_from_tgk(CONST_TEK, 1, 1, &rand), 16).unwrap(),
+            "cs_id must be bound into the key"
+        );
     }
 
     #[test]

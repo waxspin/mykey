@@ -38,7 +38,7 @@ This page provides a navigational index of the public surface.
 | `MikeyMessage::rand_bytes` | Extract the RAND payload bytes |
 | `MikeyMessage::dh_public` | Extract the DH public key from the DH payload |
 | `MikeyMessage::security_policy` | Extract the SP payload if present |
-| `MikeyMessage::derive_psk_keys` | Derive SRTP key material from a PSK message |
+| `MikeyMessage::complete_psk` | Derive SRTP key material from a PSK message |
 
 ---
 
@@ -48,7 +48,7 @@ This page provides a navigational index of the public surface.
 |---|---|
 | `SrtpCryptoSuite` | Describes a key/salt length pair; includes `AES_128_CM_SHA1_80` and `AES_256_CM_SHA1_80` |
 | `SrtpKeyMaterial` | Holds `master_key: Vec<u8>` and `master_salt: Vec<u8>` |
-| `derive_srtp_keys` | Low-level: derive key material from TGK + RAND + CS ID + suite |
+| `derive_srtp_keys` | Low-level: derive key material from TGK + RAND + CS ID + CSB ID + suite (RFC 3830 §4.1.3) |
 
 ---
 

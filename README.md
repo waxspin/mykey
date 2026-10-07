@@ -19,6 +19,10 @@ A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https
 - Message parsing and serialization (wire format)
 - Optional persistent identity keypairs with peer key pinning (MITM protection)
 
+## Interoperability
+
+mykey is not a complete MIKEY implementation. The PRF and key derivation follow RFC 3830 §4.1, but DH mode uses X25519 and omits the SIGN payload the RFC requires, and PSK mode does not yet encrypt the KEMAC payload. Every known departure is catalogued in **[Deviations from RFC 3830](https://waxspin.github.io/mykey/concepts/rfc-deviations.html)** — read it before assuming a mykey exchange will interoperate with another MIKEY stack.
+
 ## Add to your project
 
 ```toml
