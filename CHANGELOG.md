@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the payload chain terminator is now `0`, per RFC 3830 §6.1
+  Table 6.1.b. `PayloadType::Last` was `255`, a value the table does not define,
+  so no message mykey emitted was conformant; inbound, a conformant `0`
+  terminator resolved to `Hdr` and parsing only succeeded when the chain happened
+  to end exactly at the end of the buffer. Messages from 1.0.0 are now rejected
+  with `InvalidPayloadType(255)`, so both ends of an exchange must be upgraded
+  together ([#24]).
+- **BREAKING:** `PayloadType::Hdr` has been removed. Table 6.1.b assigns no
+  `Next Payload` value to the common header, and nothing in the crate referenced
+  the variant; `Payload::Header` is unaffected.
+- **BREAKING:** a message whose payload chain points at another payload after the
+  buffer has been exhausted is now rejected as truncated. Previously the parse
+  loop stopped on buffer exhaustion and reported success.
 - **BREAKING:** `mikey_prf` now implements the RFC 3830 §4.1.2 PRF. The previous
   implementation was a counter-mode KDF that matched no other MIKEY
   implementation ([#22]). Every key derived by mykey changes value; an exchange
@@ -43,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and no receive path verifies the message MAC.
 
 [#22]: https://github.com/waxspin/mykey/issues/22
+[#24]: https://github.com/waxspin/mykey/issues/24
 
 ## [1.0.0] - 2026-05-02
 

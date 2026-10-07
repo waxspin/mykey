@@ -11,7 +11,7 @@ mykey for interoperability with another MIKEY stack, read this page first.
 |---|---|
 | PRF (§4.1.2) | Compliant |
 | Key derivation labels (§4.1.3, §4.1.4) | Compliant |
-| "Last payload" value (§6.1) | **Deviates** — uses 255 where the RFC assigns 0; breaks every outbound message |
+| "Last payload" value (§6.1) | Compliant — fixed; was 255 where the RFC assigns 0 |
 | TGK construction | **Deviates** — derived through the PRF rather than used raw |
 | DH method (§3.3) | **Deviates** — X25519, and no SIGN payload; §3.3 is a non-goal |
 | PSK method (§3.1) | **Incomplete** — NULL encryption only; MAC not verified on receive |
@@ -210,32 +210,39 @@ Measured behaviour, for the avoidance of doubt: type 0 (NTP-UTC) and type 2
 parse error rather than silently accepting the misaligned data. The enum variant
 name is also a misnomer — Table 6.6 type 1 is "NTP" at 64 bits, not a short form.
 
-## The "Last payload" terminator
+## The "Last payload" terminator — fixed
 
-This is the single most consequential wire-format deviation, and it affects every
-message in every mode.
+This was the single most consequential wire-format deviation: it affected every
+message in every mode. It is **fixed**, and recorded here because it is a
+breaking wire change against mykey ≤ 1.0.0.
 
 RFC 3830 Table 6.1.b assigns **0** to "Last payload", the value that terminates a
-payload chain. The table contains no entry for the common header, since `HDR` is
-never a `Next Payload` value.
+payload chain, and assigns nothing to the common header — `HDR` is never a
+`Next Payload` value.
 
-mykey declares `PayloadType::Last = 255` and maps `0` to `PayloadType::Hdr`.
-Value 255 is not defined by Table 6.1.b at all.
+mykey ≤ 1.0.0 declared `PayloadType::Last = 255` and mapped `0` to
+`PayloadType::Hdr`. Value 255 is not defined by Table 6.1.b at all. The effects
+were:
 
-- **Outbound messages are non-conformant.** Every chain mykey emits is terminated
-  with `0xFF`. A conformant peer reads 255, finds no such entry in Table 6.1.b,
-  and rejects the message.
-- **Inbound parsing succeeds only by accident.** The parse loop is
-  `while next != 255 && pos < data.len()`, so a conformant `0` terminator is never
-  recognised as one — parsing stops because the cursor reached the end of the
-  buffer. Any message whose payload chain ends before the buffer does instead
-  reaches `PayloadType::from_u8(0)`, resolves it to `Hdr`, and fails with
-  `InvalidPayloadType(0)`.
+- **Outbound messages were non-conformant.** Every chain was terminated with
+  `0xFF`, which a conformant peer rejects as an undefined `Next Payload` value.
+- **Inbound parsing worked only by accident.** The loop was
+  `while next != 255 && pos < data.len()`, so a conformant `0` terminator was
+  never recognised as one — parsing stopped because the cursor reached the end of
+  the buffer. A chain ending before the buffer did instead resolved `0` to `Hdr`
+  and failed with `InvalidPayloadType(0)`.
 
-Fixing this means setting `Last = 0`, removing `Hdr` from the `Next Payload`
-mapping, and terminating on the value rather than on buffer exhaustion. It is a
-one-byte change on the wire and a breaking one, so it belongs with the rest of
-the interoperability work.
+`Last` is now `0`, `Hdr` has been removed from the enum (it had no wire value and
+was never referenced), and the parse loop terminates on the value, treating an
+exhausted buffer mid-chain as the truncation it is rather than as a successful
+parse.
+
+Two consequences for callers:
+
+- A message from mykey ≤ 1.0.0, terminated with 255, is now rejected with
+  `InvalidPayloadType(255)`. Both ends of an exchange must be upgraded together.
+- `PayloadType::Hdr` no longer exists. Nothing in the crate referenced it; the
+  common header is represented by `Payload::Header`, which is unaffected.
 
 ## Key data sub-payload
 
@@ -266,16 +273,14 @@ verifies them.
 
 ## What *is* interoperable
 
-The PRF (§4.1.2) and the key derivation labels and constants (§4.1.3 and §4.1.4)
-follow the RFC. The individual payload layouts and the common header fields are
-also as specified — but note that the "Last payload" terminator above means no
-message mykey *emits* is currently conformant, however correct its individual
-payloads are.
+The PRF (§4.1.2), the key derivation labels and constants (§4.1.3 and §4.1.4),
+the payload chain terminator (§6.1), the individual payload layouts, and the
+common header fields all follow the RFC.
 
-Pre-shared key mode is the realistic path to interoperability, once the
-terminator, KEMAC encryption, sub-payload framing, and MAC verification gaps are
-closed. It is also the only method RFC 3830 makes mandatory to implement, so it
-is the one any other MIKEY stack is guaranteed to support.
+Pre-shared key mode is the realistic path to interoperability, once the KEMAC
+encryption, sub-payload framing, and MAC verification gaps are closed. It is also
+the only method RFC 3830 makes mandatory to implement, so it is the one any other
+MIKEY stack is guaranteed to support.
 
 Note that RFC 3830 publishes no test vectors, so conformance of the derivation
 chain can only be confirmed by testing against another implementation.

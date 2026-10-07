@@ -36,7 +36,16 @@ impl MikeyMessage {
         let mut payloads = Vec::new();
         let mut next = header.next_payload;
 
-        while next != PayloadType::Last as u8 && pos < data.len() {
+        // The chain ends when a payload declares "Last payload" (0, per RFC 3830
+        // Table 6.1.b). Running out of bytes while the chain still points at
+        // another payload means the message is truncated, not finished.
+        while next != PayloadType::Last as u8 {
+            if pos >= data.len() {
+                return Err(MikeyError::MessageTooShort {
+                    expected: pos + 1,
+                    actual: data.len(),
+                });
+            }
             let payload_type =
                 PayloadType::from_u8(next).ok_or(MikeyError::InvalidPayloadType(next))?;
             let (payload, consumed) = Self::parse_payload(payload_type, &data[pos..])?;
@@ -1149,7 +1158,7 @@ mod tests {
         //   T payload: next(1)+ts_type(1)+ts_value(4) = 6 bytes  [19..25]
         //   RAND payload: next(1)+len(1)+rand(16) = 18 bytes      [25..43]
         //   DH payload: next(1)+dh_group(1)+...                  [43..]
-        // bytes[43] = next_payload (255=Last), bytes[44] = dh_group (255=X25519)
+        // bytes[43] = next_payload (0=Last), bytes[44] = dh_group (255=X25519)
         bytes[44] = 50; // not a known DH group
         assert!(MikeyMessage::from_bytes(&bytes).is_err());
     }
@@ -1173,5 +1182,103 @@ mod tests {
         let msg = initiator.init_message().unwrap();
         let parsed = MikeyMessage::from_bytes(msg.to_bytes()).unwrap();
         assert_eq!(parsed.header.csc_id, csc_id);
+    }
+
+    // ── "Last payload" terminator (RFC 3830 §6.1, Table 6.1.b) ──────────────
+    //
+    // Table 6.1.b assigns 0 to "Last payload" and assigns nothing to HDR. mykey
+    // previously used 255, which the table does not define, so no message it
+    // emitted was conformant and a conformant 0 terminator resolved to `Hdr`.
+
+    /// Build a conformant message by hand: HDR, T(COUNTER), RAND, terminated
+    /// with next_payload = 0. Byte sequences are written out rather than
+    /// produced by the builders, so this tests the wire format itself.
+    fn conformant_bytes(rand_len: u8, terminator: u8) -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(&[1, DataType::PskInit as u8, PayloadType::T as u8, 0]);
+        m.extend_from_slice(&0x1234_5678u32.to_be_bytes()); // CSB ID
+        m.push(1); // #CS
+        m.push(0); // CS ID map type = SRTP-ID
+        m.push(0); // policy_no
+        m.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // SSRC
+        m.extend_from_slice(&0u32.to_be_bytes()); // ROC
+
+        m.push(PayloadType::Rand as u8); // T.next_payload
+        m.push(TimestampType::Counter as u8);
+        m.extend_from_slice(&[0, 0, 0, 1]);
+
+        m.push(terminator); // RAND.next_payload
+        m.push(rand_len);
+        m.extend_from_slice(&vec![0xAA; rand_len as usize]);
+        m
+    }
+
+    #[test]
+    fn test_last_payload_value_is_zero() {
+        assert_eq!(PayloadType::Last as u8, 0);
+        assert_eq!(PayloadType::from_u8(0), Some(PayloadType::Last));
+        // 255 is not a defined Next Payload value.
+        assert_eq!(PayloadType::from_u8(255), None);
+    }
+
+    #[test]
+    fn test_emitted_messages_terminate_with_zero() {
+        // DH-Init: header(10) + cs_map(9) + T(6) + RAND(18) => DH payload at 43,
+        // whose next_payload is the chain terminator.
+        let dh = DhInitiator::new(1, 2).init_message().unwrap();
+        assert_eq!(dh.to_bytes()[43], 0, "DH-Init must terminate with 0");
+
+        // PSK-Init has the same prefix layout, with KEMAC in place of DH.
+        let psk = MikeyMessage::new_psk_init(1, 2, &[0x55; 16], b"psk").unwrap();
+        assert_eq!(psk.to_bytes()[43], 0, "PSK-Init must terminate with 0");
+    }
+
+    #[test]
+    fn test_parses_conformant_zero_terminator() {
+        let bytes = conformant_bytes(16, PayloadType::Last as u8);
+        let msg = MikeyMessage::from_bytes(&bytes).expect("conformant message must parse");
+        assert_eq!(msg.payloads.len(), 2, "expected T and RAND");
+        assert_eq!(msg.rand_bytes(), Some(&[0xAAu8; 16][..]));
+    }
+
+    #[test]
+    fn test_rejects_legacy_255_terminator() {
+        // Messages from mykey <= 1.0.0 terminated with 255. That value is not in
+        // Table 6.1.b, so it must now be rejected rather than silently accepted.
+        // Trailing bytes are appended so the parser reaches the type lookup
+        // rather than stopping at the end of the buffer first — this pins the
+        // rejection to the undefined value, not to truncation.
+        let mut bytes = conformant_bytes(16, 255);
+        bytes.extend_from_slice(&[0x99; 20]);
+        match MikeyMessage::from_bytes(&bytes) {
+            Err(MikeyError::InvalidPayloadType(255)) => {}
+            other => panic!("expected InvalidPayloadType(255), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_truncated_chain_rejected() {
+        // The chain points at another payload, but the buffer ends. Previously
+        // the loop's `pos < data.len()` guard made this parse as if complete.
+        let mut bytes = conformant_bytes(16, PayloadType::Kemac as u8);
+        // Leave the RAND intact but provide no KEMAC at all.
+        assert!(
+            MikeyMessage::from_bytes(&bytes).is_err(),
+            "truncated chain must be rejected, not treated as terminated"
+        );
+
+        // Same message, but terminated properly, parses.
+        bytes = conformant_bytes(16, PayloadType::Last as u8);
+        assert!(MikeyMessage::from_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn test_trailing_bytes_after_terminator_are_ignored() {
+        // PSK mode appends the message MAC after the payload chain, so bytes
+        // beyond the terminator are normal and must not cause a parse failure.
+        let mut bytes = conformant_bytes(16, PayloadType::Last as u8);
+        bytes.extend_from_slice(&[0x99; 20]);
+        let msg = MikeyMessage::from_bytes(&bytes).expect("trailing MAC must not break parsing");
+        assert_eq!(msg.payloads.len(), 2);
     }
 }

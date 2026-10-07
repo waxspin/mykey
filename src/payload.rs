@@ -1,11 +1,15 @@
 #![allow(missing_docs)]
 
-/// MIKEY payload types as defined in RFC 3830 Section 6.1
+/// MIKEY `Next Payload` values as defined in RFC 3830 Section 6.1, Table 6.1.b.
+///
+/// Note that the table assigns no value to the common header — `HDR` is never a
+/// `Next Payload` value — and that "Last payload" is **0**, the value that
+/// terminates a payload chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PayloadType {
-    /// Common header payload
-    Hdr = 0,
+    /// Last payload — terminates the payload chain
+    Last = 0,
     /// Key data transport (KEMAC)
     Kemac = 1,
     /// Envelope data (PKE)
@@ -34,14 +38,12 @@ pub enum PayloadType {
     KeyData = 20,
     /// General extension
     GeneralExt = 21,
-    /// Last payload marker
-    Last = 255,
 }
 
 impl PayloadType {
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(Self::Hdr),
+            0 => Some(Self::Last),
             1 => Some(Self::Kemac),
             2 => Some(Self::Pke),
             3 => Some(Self::Dh),
@@ -56,7 +58,6 @@ impl PayloadType {
             12 => Some(Self::Err),
             20 => Some(Self::KeyData),
             21 => Some(Self::GeneralExt),
-            255 => Some(Self::Last),
             _ => None,
         }
     }
