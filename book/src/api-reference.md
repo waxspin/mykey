@@ -34,11 +34,19 @@ This page provides a navigational index of the public surface.
 | `MikeyMessage::from_bytes` | Parse a wire-format MIKEY message |
 | `MikeyMessage::new_dh_init` | Build a DH-Init message |
 | `MikeyMessage::new_dh_resp` | Build a DH-Resp message |
-| `MikeyMessage::new_psk_init` | Build a PSK-Init message |
+| `MikeyMessage::new_psk_init` | Build a PSK-Init message (no verification requested) |
+| `MikeyMessage::new_psk_init_requiring_verification` | Build a PSK-Init that sets the V flag, for mutual authentication |
+| `MikeyMessage::new_psk_verification` | Build the responder's verification message (§6.9) |
+| `MikeyMessage::verify_psk_verification` | Check a responder's verification message |
+| `MikeyMessage::requires_verification` | Whether the initiator set the V flag |
 | `MikeyMessage::rand_bytes` | Extract the RAND payload bytes |
 | `MikeyMessage::dh_public` | Extract the DH public key from the DH payload |
 | `MikeyMessage::security_policy` | Extract the SP payload if present |
-| `MikeyMessage::complete_psk` | Derive SRTP key material from a PSK message |
+| `MikeyMessage::kemac` | Extract the KEMAC payload if present |
+| `MikeyMessage::timestamp_payload` | Extract the T payload if present |
+| `MikeyMessage::timestamp_value` | Extract the raw timestamp value |
+| `MikeyMessage::complete_psk` | Verify a PSK message and derive SRTP key material |
+| `MikeyMessage::verify_and_extract_tgk` | Verify the MAC and recover the transported TGK |
 
 ---
 
@@ -112,7 +120,11 @@ Low-level payload types. Most users should not need these directly — they are 
 | `RandPayload` | RAND nonce payload (type 11) |
 | `DhPayload` | DH public key payload (type 3) |
 | `DhGroup` | DH group enum; `X25519 = 255` |
-| `KemacPayload` | KEMAC payload (type 1) — carries the TGK in PSK mode |
+| `KemacPayload` | KEMAC payload (type 1) — carries the encrypted key data in PSK mode |
+| `KeyDataSubPayload` | Key data sub-payload (§6.13) — the framed TGK inside a KEMAC |
+| `KeyDataType` | Key kind: `Tgk`, `TgkSalt`, `Tek`, `TekSalt` (Table 6.13.a) |
+| `KeyValidity` / `KeyValidityType` | Key validity data (§6.14) — none, SPI/MKI, or interval |
+| `VerificationPayload` | V payload (type 9) — `auth_alg` plus verification data |
 | `SpPayload` | Security Policy payload (type 10) |
 | `SpParam` | A single TLV parameter within an SP payload |
 | `SrtpParamType` | SRTP parameter type codes (RFC 3830 §6.10.1) |
