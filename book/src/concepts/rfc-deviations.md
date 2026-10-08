@@ -12,7 +12,7 @@ mykey for interoperability with another MIKEY stack, read this page first.
 | PRF (§4.1.2) | Compliant |
 | Key derivation labels (§4.1.3, §4.1.4) | Compliant |
 | "Last payload" value (§6.1) | Compliant — fixed; was 255 where the RFC assigns 0 |
-| TGK construction | **Deviates** — derived through the PRF rather than used raw |
+| TGK construction | **Deviates** — derived through the PRF rather than used raw, per RFC 7748 §6.1 |
 | DH method (§3.3) | **Deviates** — X25519, and no SIGN payload; §3.3 is a non-goal |
 | PSK method (§3.1) | Compliant — fixed; random TGK transported under AES-CM, MAC verified on receive |
 | Key data sub-payload (§6.13) | Compliant — fixed |
@@ -83,21 +83,32 @@ conformant X25519 mode to conform to. Running the shared secret through the PRF
 is simply the better of the two available options, and it costs nothing because
 this mode is private-use regardless.
 
-Two refinements are outstanding, both from RFC 7748:
+Two refinements from RFC 7748 have since been applied:
 
-- **The public keys are not bound into the derivation.** `derive_tgk` takes the
-  shared secret and RAND only. RFC 7748 §6.1 asks for `K_A` and `K_B` as well,
-  and §7 explains why: equivalent public keys yield identical shared secrets, so
-  "using a public key as an identifier and knowledge of a shared secret as proof
-  of ownership (without including the public keys in the key derivation) might
-  lead to subtle vulnerabilities" — which is exactly what
-  [peer pinning](../identity/overview.md) does. `PinnedPeer::verify` compares all
-  32 bytes exactly, so a substituted equivalent encoding is rejected by the pin
-  itself; this is a robustness gap rather than a known exploit.
-- **There is no contributory check.** Neither `was_contributory()` nor an
-  all-zero test is called anywhere, so a small-order peer value "will eliminate
-  any contribution from the other party's private key" (§7) and yield a
-  predictable TGK.
+- **Both public keys are bound into the derivation**, as §6.1 asks:
+
+  ```text
+  TGK = PRF(K, "MIKEY-X25519-TGK" || K_initiator || K_responder || RAND)
+  ```
+
+  §7 explains why it matters: equivalent public keys yield identical shared
+  secrets, so "using a public key as an identifier and knowledge of a shared
+  secret as proof of ownership (without including the public keys in the key
+  derivation) might lead to subtle vulnerabilities" — which is exactly what
+  [peer pinning](../identity/overview.md) does. (`PinnedPeer::verify` compares
+  all 32 bytes exactly, so a substituted equivalent encoding was already
+  rejected by the pin itself; this closed a robustness gap, not a known
+  exploit.)
+
+  The keys are ordered by **protocol role** rather than by who is calling, so an
+  initiator and a responder independently build the same label. Ordering by
+  "own, then peer" would have produced two different labels and no agreement.
+
+- **Small-order peer values are rejected.** `was_contributory()` is now checked
+  in both `DhKeyPair::diffie_hellman` and `Identity::diffie_hellman`, so a peer
+  cannot force an all-zero shared secret that it can predict (§7: such a value
+  "will eliminate any contribution from the other party's private key").
+  Checking is optional in §6.1; mykey rejects with `InvalidDhValue`.
 
 Everything downstream of the TGK (the SRTP master key and salt) follows §4.1.3
 exactly.

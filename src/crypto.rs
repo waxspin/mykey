@@ -114,11 +114,22 @@ impl DhKeyPair {
         Self { secret, public }
     }
 
-    /// Perform DH exchange, consuming the ephemeral secret. Returns shared secret.
-    pub fn diffie_hellman(self, peer_public: &[u8; 32]) -> Vec<u8> {
+    /// Perform the DH exchange, consuming the ephemeral secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhValue`] if the peer's public key has small
+    /// order. RFC 7748 §7 notes that such a value "will eliminate any
+    /// contribution from the other party's private key", producing an all-zero
+    /// shared secret that the peer can predict. Checking is optional in
+    /// RFC 7748 §6.1; mykey rejects it.
+    pub fn diffie_hellman(self, peer_public: &[u8; 32]) -> Result<Vec<u8>> {
         let peer = PublicKey::from(*peer_public);
         let shared = self.secret.diffie_hellman(&peer);
-        shared.as_bytes().to_vec()
+        if !shared.was_contributory() {
+            return Err(MikeyError::InvalidDhValue);
+        }
+        Ok(shared.as_bytes().to_vec())
     }
 }
 
@@ -167,14 +178,58 @@ pub fn label_from_psk(constant: u32, csb_id: u32, rand: &[u8]) -> Vec<u8> {
     label_from_tgk(constant, 0xFF, csb_id, rand)
 }
 
-/// Derive a TGK (TEK Generation Key) from a DH shared secret or pre-shared key.
+/// PRF label prefix for the X25519 TGK derivation.
 ///
-/// **This is a deliberate deviation from RFC 3830**, which has no such step: in
-/// the DH method the TGK *is* the raw DH result (§3.3), and in the pre-shared
-/// key method the TGK is transported inside KEMAC rather than derived (§3.1).
-/// mykey runs the input through the PRF instead, because a raw X25519 shared
-/// secret should not be used directly as key material. Consequently this label
-/// has no RFC constant. See the "Deviations from RFC 3830" chapter of the book.
+/// Deliberately not an RFC constant: this derivation has no RFC counterpart, and
+/// a descriptive ASCII label makes that visible at a glance.
+const X25519_TGK_LABEL: &[u8] = b"MIKEY-X25519-TGK";
+
+/// Derive a TGK (TEK Generation Key) from an X25519 exchange.
+///
+/// ```text
+/// TGK = PRF(K, "MIKEY-X25519-TGK" || K_initiator || K_responder || RAND)
+/// ```
+///
+/// **This is a deliberate deviation from RFC 3830**, which has no such step — in
+/// the DH method the TGK *is* the raw DH result `g^(xi*xr)` (§3.3). But §3.3 was
+/// written for MODP groups, and applying it literally to X25519 would mean using
+/// a raw curve point as key material, which
+/// [RFC 7748](https://datatracker.ietf.org/doc/rfc7748/) §6.1 advises against:
+/// "Alice and Bob can then use a key-derivation function that includes K, K_A,
+/// and K_B to derive a symmetric key." Since no elliptic-curve group is
+/// registered for MIKEY, there is no conformant X25519 mode to conform to.
+///
+/// Both public keys are bound in, as §6.1 asks. §7 explains why it matters:
+/// equivalent public keys produce identical shared secrets, so "using a public
+/// key as an identifier and knowledge of a shared secret as proof of ownership
+/// (without including the public keys in the key derivation) might lead to
+/// subtle vulnerabilities" — and [`PinnedPeer`](crate::identity::PinnedPeer)
+/// uses public keys as identifiers.
+///
+/// The keys are ordered by **protocol role**, not by who is calling, so both
+/// sides compute the same label: MIKEY names an initiator and a responder, and
+/// each party knows which it is.
+///
+/// See the "Deviations from RFC 3830" chapter of the book.
+pub fn derive_tgk_x25519(
+    shared_secret: &[u8],
+    initiator_public: &[u8; 32],
+    responder_public: &[u8; 32],
+    rand: &[u8],
+    tgk_len: usize,
+) -> Result<Vec<u8>> {
+    let mut label = X25519_TGK_LABEL.to_vec();
+    label.extend_from_slice(initiator_public);
+    label.extend_from_slice(responder_public);
+    label.extend_from_slice(rand);
+    mikey_prf(shared_secret, &label, tgk_len)
+}
+
+/// Derive a TGK from a raw input key and RAND, without binding any public keys.
+///
+/// Retained for callers that have no DH public keys to bind — notably tests and
+/// any non-X25519 input. For an X25519 exchange use
+/// [`derive_tgk_x25519`], which binds both peers' public keys per RFC 7748 §6.1.
 pub fn derive_tgk(inkey: &[u8], rand: &[u8], tgk_len: usize) -> Result<Vec<u8>> {
     // TGK = PRF(inkey, "TGK" || RAND, tgk_len)
     let mut label = b"TGK".to_vec();
@@ -488,10 +543,113 @@ mod tests {
         let alice_pub = *alice.public.as_bytes();
         let bob_pub = *bob.public.as_bytes();
 
-        let shared_a = alice.diffie_hellman(&bob_pub);
-        let shared_b = bob.diffie_hellman(&alice_pub);
+        let shared_a = alice.diffie_hellman(&bob_pub).unwrap();
+        let shared_b = bob.diffie_hellman(&alice_pub).unwrap();
 
         assert_eq!(shared_a, shared_b);
         assert_eq!(shared_a.len(), 32);
+    }
+
+    // ── RFC 7748 hardening ──────────────────────────────────────────────────
+
+    /// X25519 points of small order. Each drives the shared secret to all-zero,
+    /// eliminating the local party's contribution (RFC 7748 §7), so every one
+    /// must be refused.
+    ///
+    /// Each entry was confirmed non-contributory against this build of
+    /// `x25519-dalek` rather than copied from a blacklist — several values that
+    /// appear in published blacklists are non-canonical encodings above `p`
+    /// which reduce to valid points, and are *not* small order.
+    const SMALL_ORDER_POINTS: &[&str] = &[
+        // order 1: the identity
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        // order 1
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        // order 8
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+        // order 4
+        "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+        // p - 1
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        // p
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        // p + 1
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        // order 8, high bit set — masked off, so equivalent to the entry above
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880",
+        // order 4, high bit set
+        "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7",
+    ];
+
+    #[test]
+    fn test_small_order_peer_keys_rejected() {
+        for point in SMALL_ORDER_POINTS {
+            let bytes: [u8; 32] = hex::decode(point).unwrap().try_into().unwrap();
+            let kp = DhKeyPair::generate();
+            match kp.diffie_hellman(&bytes) {
+                Err(MikeyError::InvalidDhValue) => {}
+                other => panic!("small-order point {point} must be rejected, got {other:?}"),
+            }
+        }
+    }
+
+    /// The same check must guard the persistent-identity path, which has its own
+    /// `diffie_hellman` over a `StaticSecret`.
+    #[test]
+    fn test_small_order_rejected_for_identity_too() {
+        use crate::identity::Identity;
+        let id = Identity::generate();
+        for point in SMALL_ORDER_POINTS {
+            let bytes: [u8; 32] = hex::decode(point).unwrap().try_into().unwrap();
+            assert!(
+                id.diffie_hellman(&bytes).is_err(),
+                "identity must reject small-order point {point}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_honest_peer_key_accepted() {
+        // The contributory check must not reject legitimate exchanges.
+        for _ in 0..16 {
+            let a = DhKeyPair::generate();
+            let b = DhKeyPair::generate();
+            let b_pub = *b.public.as_bytes();
+            assert!(a.diffie_hellman(&b_pub).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_tgk_binds_both_public_keys() {
+        // RFC 7748 §6.1 asks for a KDF over K, K_A and K_B. Changing either
+        // bound key must change the derived TGK, even with K and RAND fixed.
+        let shared = [0x42u8; 32];
+        let rand = [0x13u8; 16];
+        let k_a = [0x01u8; 32];
+        let k_b = [0x02u8; 32];
+
+        let base = derive_tgk_x25519(&shared, &k_a, &k_b, &rand, 32).unwrap();
+
+        let other_a = derive_tgk_x25519(&shared, &[0x03u8; 32], &k_b, &rand, 32).unwrap();
+        let other_b = derive_tgk_x25519(&shared, &k_a, &[0x04u8; 32], &rand, 32).unwrap();
+        assert_ne!(base, other_a, "initiator key must be bound in");
+        assert_ne!(base, other_b, "responder key must be bound in");
+
+        // Order matters: swapping the roles must not collide, or the binding
+        // would not distinguish initiator from responder.
+        let swapped = derive_tgk_x25519(&shared, &k_b, &k_a, &rand, 32).unwrap();
+        assert_ne!(base, swapped, "role ordering must be significant");
+    }
+
+    #[test]
+    fn test_tgk_x25519_differs_from_unbound_derivation() {
+        // Regression guard: the bound derivation must not coincide with the
+        // old unbound `derive_tgk`.
+        let shared = [0x42u8; 32];
+        let rand = [0x13u8; 16];
+        assert_ne!(
+            derive_tgk_x25519(&shared, &[0x01u8; 32], &[0x02u8; 32], &rand, 32).unwrap(),
+            derive_tgk(&shared, &rand, 32).unwrap()
+        );
     }
 }
