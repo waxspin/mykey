@@ -201,6 +201,84 @@ pub fn derive_enc_key(psk: &[u8], csb_id: u32, rand: &[u8], enc_key_len: usize) 
     mikey_prf(psk, &label, enc_key_len)
 }
 
+/// Derive the KEMAC salting key from an envelope or pre-shared key, per
+/// RFC 3830 §4.1.4.
+///
+/// §4.2.3 uses a 112-bit (14-byte) salt, which is [`KEMAC_SALT_LEN`].
+pub fn derive_salt_key(
+    psk: &[u8],
+    csb_id: u32,
+    rand: &[u8],
+    salt_key_len: usize,
+) -> Result<Vec<u8>> {
+    let label = label_from_psk(CONST_SALT_FROM_PSK, csb_id, rand);
+    mikey_prf(psk, &label, salt_key_len)
+}
+
+/// Key length for AES-CM key wrapping of the KEMAC payload (RFC 3830 §4.2.3).
+pub const KEMAC_ENC_KEY_LEN: usize = 16;
+
+/// Salt length for AES-CM key wrapping of the KEMAC payload — 112 bits.
+pub const KEMAC_SALT_LEN: usize = 14;
+
+/// Build the AES-CM initialisation vector for KEMAC key transport, per
+/// RFC 3830 §4.2.3:
+///
+/// ```text
+/// IV = (S XOR (0x0000 || CSB ID || T)) || 0x0000
+/// ```
+///
+/// `S` is the 112-bit salting key from [`derive_salt_key`] and `T` is the 64-bit
+/// timestamp sent by the initiator. A shorter timestamp — a 32-bit COUNTER — is
+/// left-padded with zeros to 64 bits, following the same convention §6.6 gives
+/// for COUNTER as PRF input.
+pub fn kemac_iv(salt: &[u8], csb_id: u32, timestamp: &[u8]) -> Result<[u8; 16]> {
+    if salt.len() != KEMAC_SALT_LEN {
+        return Err(MikeyError::Crypto(format!(
+            "KEMAC salt must be {KEMAC_SALT_LEN} bytes, got {}",
+            salt.len()
+        )));
+    }
+    if timestamp.len() > 8 {
+        return Err(MikeyError::Crypto(format!(
+            "timestamp must be at most 8 bytes, got {}",
+            timestamp.len()
+        )));
+    }
+
+    // 0x0000 || CSB ID || T, with T right-aligned in its 8 bytes.
+    let mut block = [0u8; KEMAC_SALT_LEN];
+    block[2..6].copy_from_slice(&csb_id.to_be_bytes());
+    block[KEMAC_SALT_LEN - timestamp.len()..].copy_from_slice(timestamp);
+
+    let mut iv = [0u8; 16];
+    for i in 0..KEMAC_SALT_LEN {
+        iv[i] = salt[i] ^ block[i];
+    }
+    // Trailing 0x0000 is already zero from initialisation.
+    Ok(iv)
+}
+
+/// Apply AES-128 in counter mode to `data` in place (RFC 3830 §4.2.3).
+///
+/// CTR is its own inverse, so this both encrypts and decrypts.
+pub fn aes_cm_apply(key: &[u8], iv: &[u8; 16], data: &mut [u8]) -> Result<()> {
+    use ctr::cipher::{KeyIvInit, StreamCipher};
+    type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
+
+    if key.len() != KEMAC_ENC_KEY_LEN {
+        return Err(MikeyError::Crypto(format!(
+            "AES-CM key must be {KEMAC_ENC_KEY_LEN} bytes, got {}",
+            key.len()
+        )));
+    }
+
+    let mut cipher = Aes128Ctr::new_from_slices(key, iv)
+        .map_err(|e| MikeyError::Crypto(format!("AES-CM init: {e}")))?;
+    cipher.apply_keystream(data);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

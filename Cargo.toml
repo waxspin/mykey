@@ -22,3 +22,5 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 # For SAP/SDP base64 encoding
 base64 = "0.22"
+aes = "0.9"
+ctr = "0.10"

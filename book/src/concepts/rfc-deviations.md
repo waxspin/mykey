@@ -14,10 +14,11 @@ mykey for interoperability with another MIKEY stack, read this page first.
 | "Last payload" value (§6.1) | Compliant — fixed; was 255 where the RFC assigns 0 |
 | TGK construction | **Deviates** — derived through the PRF rather than used raw |
 | DH method (§3.3) | **Deviates** — X25519, and no SIGN payload; §3.3 is a non-goal |
-| PSK method (§3.1) | **Incomplete** — NULL encryption only; MAC not verified on receive |
-| Timestamps (§4.2.8, §6.6) | **Deviates** — COUNTER (optional type) rather than the mandatory NTP types; no replay handling; type 1 length wrong |
-| Key data sub-payload (§6.13) | Not implemented — the TGK is written as bare bytes |
-| Verification message (§6.9) | Not implemented — no mutual authentication |
+| PSK method (§3.1) | Compliant — fixed; random TGK transported under AES-CM, MAC verified on receive |
+| Key data sub-payload (§6.13) | Compliant — fixed |
+| Verification message (§6.9) | Compliant — fixed; opt-in via the V flag |
+| Timestamps (§4.2.8, §6.6) | **Deviates** — emits COUNTER (the optional type) rather than a mandatory NTP type |
+| Replay protection (§5.4) | Not implemented — no record of seen timestamps or RAND values |
 | Public-key method (§3.2) | Not implemented |
 
 Interoperability work is planned: pre-shared key mode to §3.1 compliance, then
@@ -170,45 +171,58 @@ SRTP *policy parameters*, not the keying method. Supporting several methods
 therefore means a responder accepting several data types by explicit
 configuration — never an automatic downgrade, which would itself be an attack.
 
-## Pre-shared key mode
+## Pre-shared key mode — fixed
 
-`new_psk_init` builds its KEMAC with NULL encryption (`EncAlg::Null`) and places
-the TGK in `enc_data` in the clear. RFC 3830 §4.2.3 permits NULL encryption only
-where "the underlying protocols can guarantee security" and warns to use it with
-caution; an SDP file or a SAP announcement is not such a channel.
+mykey ≤ 1.0.0 derived the TGK from the pre-shared key on both sides and built its
+KEMAC with NULL encryption, placing the TGK in `enc_data` in the clear. Anyone who
+could read a PSK-Init recovered the SRTP master key without knowing the PSK, and
+no receive path verified the MAC. Both are now fixed.
 
-> **Warning:** anyone who can read a mykey PSK-Init message can recover the TGK
-> and therefore the SRTP master key, without knowing the pre-shared key. Do not
-> use PSK mode over a channel you would not be willing to send the SRTP key over
-> directly.
+PSK mode follows §3.1 as key *transport*: the initiator generates a random TGK,
+frames it as a Key data sub-payload (§6.13), and encrypts it with AES-CM (§4.2.3)
+under an encryption key and 112-bit salt derived from the pre-shared key (§4.1.4).
+The IV is built as the RFC specifies:
 
-RFC-correct PSK mode requires encrypting the TGK under an encryption key derived
-per §4.1.4 (AES-CM, §4.2.3), which needs a block cipher mykey does not currently
-depend on. `derive_enc_key` already produces the correct key for this.
+```text
+IV = (S XOR (0x0000 || CSB ID || T)) || 0x0000
+```
 
-Separately, no receive path verifies the KEMAC MAC. `new_psk_init` computes and
-appends one, but `from_bytes` and `complete_psk` do not check it, so it currently
-provides no integrity protection on ingest.
+On receive, the message MAC is verified **before** any decryption, so a message
+that fails authentication produces no key material. A `MacAlg::Null` payload, an
+absent MAC, and a truncated MAC are all refused rather than treated as "no check
+required".
 
-## Timestamps and replay protection
+This is a breaking change against 1.0.0 in both directions: the KEMAC contents
+differ, and `complete_psk` now decrypts rather than re-deriving.
+
+## Timestamps
 
 RFC 3830 defines three timestamp types (§6.6, Table 6.6): NTP-UTC (0) and NTP (1)
 are **mandatory** and 64 bits wide; COUNTER (2) is **optional** and 32 bits.
 
-mykey emits COUNTER, with the CSB ID as the counter value. It implements none of
-the replay handling the timestamp exists to support (§5.4) — nothing records seen
-timestamps or RAND values, so a captured message can be replayed.
+mykey emits COUNTER, with the CSB ID as the counter value. Moving to a mandatory
+NTP type requires a clock and a skew-tolerance policy, which also makes messages
+expire — a deployment constraint rather than a pure bug fix, so it is tracked
+separately.
 
-`TimestampType::value_len()` also reports 4 bytes for type 1 (`NtpShort`), where
-Table 6.6 specifies 64 bits. Because `parse_timestamp` uses that length both to
-slice the value and to advance the payload cursor, a message carrying a type 1
-timestamp is read four bytes short and every following payload is parsed from the
-wrong offset.
+The length of type 1 is now correct. `TimestampType::value_len()` previously
+reported 4 bytes where Table 6.6 specifies 64 bits, and because
+`parse_timestamp` uses that length both to slice the value and to advance the
+payload cursor, a type 1 timestamp was read four bytes short and every following
+payload parsed from the wrong offset. Measured at the time: types 0 and 2 parsed
+correctly, only type 1 was affected, and it failed closed with a parse error
+rather than silently accepting misaligned data. The variant was also misnamed
+`NtpShort`; Table 6.6 type 1 is "NTP" at 64 bits, not a short form.
 
-Measured behaviour, for the avoidance of doubt: type 0 (NTP-UTC) and type 2
-(COUNTER) parse correctly; only type 1 is affected, and it fails closed with a
-parse error rather than silently accepting the misaligned data. The enum variant
-name is also a misnomer — Table 6.6 type 1 is "NTP" at 64 bits, not a short form.
+## Replay protection
+
+Not implemented. Nothing records the timestamps or RAND values already seen
+(§5.4), so a captured PSK-Init can be replayed and the receiver will accept it and
+derive the same keys.
+
+This needs state, which mykey currently has none of — `from_bytes` is a pure
+function — so where the cache lives is an API design question rather than a
+missing call.
 
 ## The "Last payload" terminator — fixed
 
@@ -244,25 +258,40 @@ Two consequences for callers:
 - `PayloadType::Hdr` no longer exists. Nothing in the crate referenced it; the
   common header is represented by `Payload::Header`, which is unaffected.
 
-## Key data sub-payload
+## Key data sub-payload — fixed
 
 RFC 3830 §6.13 gives key material inside KEMAC a structure: a `Next Payload`,
 `Type` and `KV` nibbles, an explicit `Key data len`, and optional salt and key
-validity fields. One KEMAC may carry several such sub-payloads.
+validity fields. One KEMAC may carry several such sub-payloads, chained and
+terminated by a "Last payload" marker.
 
-mykey writes the TGK into `enc_data` as bare bytes with none of this framing, so
-even with encryption in place the payload would not parse as a conformant KEMAC.
+mykey ≤ 1.0.0 wrote the TGK into `enc_data` as bare bytes with none of this
+framing. `KeyDataSubPayload` now implements the full layout, including the §6.14
+key validity data in both its SPI/MKI and interval forms. PSK mode emits a single
+TGK sub-payload with `KV = Null`.
 
-## Verification message
+## Verification message — fixed
 
 The pre-shared key and public-key methods use a verification message (`V`, §6.9;
 data type 1) so the responder can prove possession of the key — this is what
-provides mutual authentication. The initiator requests it via a flag in the
+provides mutual authentication. The initiator requests it via the V flag in the
 common header.
 
-`VerificationPayload` and `PayloadType::V` exist and parse, but nothing builds a
-verification message and nothing checks one, and the header flag is never set.
-PSK mode is therefore one-way: the initiator learns nothing about the responder.
+mykey ≤ 1.0.0 had the `VerificationPayload` type but nothing built or checked
+one, and the header flag was never set. It is now implemented as an opt-in:
+`new_psk_init_requiring_verification` sets the flag, `new_psk_verification`
+builds the reply, and `verify_psk_verification` checks it. The default
+`new_psk_init` still requests no reply, so offline distribution over SDP or SAP
+keeps working.
+
+Per §5.2, the verification MAC covers the responder's message followed by
+`IDi || IDr || Timestamp`, and the responder must echo the initiator's timestamp
+rather than minting a new one — a substituted timestamp is rejected.
+
+The `VerificationPayload` wire format was also wrong: §6.9 places an `Auth alg`
+byte between `Next Payload` and the verification data, and mykey ≤ 1.0.0 omitted
+it from both parsing and serialization, hardcoding a 20-byte MAC instead. This is
+a breaking wire change for any V payload.
 
 ## Public-key mode
 
@@ -277,10 +306,14 @@ The PRF (§4.1.2), the key derivation labels and constants (§4.1.3 and §4.1.4)
 the payload chain terminator (§6.1), the individual payload layouts, and the
 common header fields all follow the RFC.
 
-Pre-shared key mode is the realistic path to interoperability, once the KEMAC
-encryption, sub-payload framing, and MAC verification gaps are closed. It is also
-the only method RFC 3830 makes mandatory to implement, so it is the one any other
-MIKEY stack is guaranteed to support.
+Pre-shared key mode — the only method RFC 3830 makes mandatory to implement, and
+so the one any other MIKEY stack is guaranteed to support — now follows §3.1 for
+key transport, §4.2.3 for key wrapping, §6.13 for key data framing, §5.2 for MAC
+computation and coverage, and §6.9 for the verification message.
+
+Two gaps remain before a PSK exchange is fully conformant: the timestamp is the
+optional COUNTER type rather than a mandatory NTP type, and there is no replay
+protection. Neither prevents a conformant peer from parsing the message.
 
 Note that RFC 3830 publishes no test vectors, so conformance of the derivation
 chain can only be confirmed by testing against another implementation.

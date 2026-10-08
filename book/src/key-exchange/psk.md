@@ -1,8 +1,10 @@
 # PSK (Pre-Shared Key)
 
-PSK mode uses a secret key that both sides already know before the session begins. The TGK is derived from the shared key and RAND using the MIKEY PRF, and a MAC over the message authenticates the exchange. There is no DH negotiation.
+PSK mode uses a secret key that both sides already know before the session begins. Following RFC 3830 §3.1, the initiator generates a random TGK and **transports** it inside the KEMAC payload, encrypted with AES-CM under keys derived from the pre-shared key (§4.1.4, §4.2.3). A MAC over the whole message authenticates it. There is no DH negotiation.
 
-> **Warning:** PSK mode is currently **not confidential and not authenticated**. `new_psk_init` places the TGK in the KEMAC payload in the clear, so anyone who can read the message can recover the SRTP master key without knowing the PSK; and no receive path verifies the message MAC. Do not send a mykey PSK-Init over any channel you would not be willing to send the SRTP master key over directly. See [Deviations from RFC 3830](../concepts/rfc-deviations.md).
+The receiver verifies the MAC *before* decrypting anything, so a message that fails authentication yields no key material at all.
+
+> **Note:** mykey ≤ 1.0.0 behaved differently — it derived the TGK from the pre-shared key on both sides and sent it in the KEMAC *in the clear*, while never verifying the MAC on receive. Anyone who could read a PSK-Init could recover the SRTP master key without knowing the PSK. If you are on 1.0.0, upgrade; see [Deviations from RFC 3830](../concepts/rfc-deviations.md).
 
 ## When to use PSK
 
@@ -77,13 +79,34 @@ Never transmit a PSK over the same network path that carries the SRTP media stre
 
 | Property | PSK |
 |---|---|
-| Forward secrecy | No — PSK compromise exposes all sessions |
-| Key confidentiality | **No** — the TGK is sent in the clear in the KEMAC payload |
-| Mutual authentication | **No** — a MAC is computed and appended, but no receive path verifies it |
-| MITM protection | **No** — follows from the above |
-| Replay protection | Partial — a fresh RAND gives each session distinct keys, but nothing tracks or rejects a replayed init message |
+| Forward secrecy | No — PSK compromise exposes all recorded sessions |
+| Key confidentiality | Yes — the TGK is AES-CM encrypted under a key derived from the PSK (§4.2.3) |
+| Initiator authentication | Yes — the MAC is verified before any decryption, so an unauthenticated message yields no keys |
+| Mutual authentication | Only with a verification message — see below |
+| MITM protection | Yes, assuming PSK distribution was secure |
+| Replay protection | **Partial** — a fresh RAND gives each session distinct keys, but nothing tracks or rejects a replayed init message |
 
-The first three are implementation gaps, not properties of the RFC's PSK method, which encrypts the TGK under a key derived from the PSK (§4.1.4) and verifies the MAC on receipt. Until they are closed, treat PSK mode as providing key *agreement* only, on an already-secure channel.
+Replay remains the open gap: mykey emits the optional COUNTER timestamp rather than a mandatory NTP type, and keeps no record of timestamps or RAND values it has seen. A captured PSK-Init can be replayed, and the receiver will accept it and derive the same keys. Do not rely on PSK mode alone to guarantee session freshness.
+
+## Mutual authentication
+
+By default `new_psk_init` does not request a reply, so the exchange is one-way: the responder authenticates the initiator, but the initiator learns nothing about the responder. That suits offline distribution, where the message is written to an SDP file or announced over SAP and no reply is possible.
+
+For mutual authentication, request a verification message (RFC 3830 §6.9). The responder's reply is a MAC over its own message plus the identities and the initiator's timestamp, so producing it proves possession of the PSK:
+
+```rust,ignore
+// Initiator — sets the V flag in the header
+let init = MikeyMessage::new_psk_init_requiring_verification(csc_id, ssrc, &rand, psk)?;
+
+// Responder — verify, derive keys, then answer
+let keys = init_received.complete_psk(psk, suite)?;
+let resp = MikeyMessage::new_psk_verification(&init_received, psk)?;
+
+// Initiator — check the reply before trusting the peer
+resp_received.verify_psk_verification(&init, psk)?;
+```
+
+`requires_verification()` tells a responder whether the initiator asked for one. This requires a bidirectional channel.
 
 ## Comparison with ephemeral DH
 
