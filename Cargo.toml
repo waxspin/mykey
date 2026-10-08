@@ -22,5 +22,18 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 # For SAP/SDP base64 encoding
 base64 = "0.22"
+
+# AES-CM key wrapping of the KEMAC payload (RFC 3830 §4.2.3)
 aes = "0.9"
 ctr = "0.10"
+
+[package.metadata.release]
+# cargo-release bumps Cargo.toml, but nothing in prose. The README's install
+# snippet pins an explicit version, so it needs rewriting too or it ships
+# pointing at the previous release.
+#
+# `exactly = 1` is deliberate: if the snippet is reworded so the pattern stops
+# matching, the release fails loudly instead of silently leaving a stale version.
+pre-release-replacements = [
+  { file = "README.md", search = 'mykey = "[0-9]+\.[0-9]+\.[0-9]+"', replace = 'mykey = "{{version}}"', exactly = 1 },
+]
