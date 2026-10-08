@@ -70,7 +70,7 @@ use mykey::{DhInitiator, Identity, PinnedPeer, srtp::SrtpCryptoSuite};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
 let my_identity = Identity::load_or_generate(std::path::Path::new("/etc/myapp/keys"))?;
-let peer = PinnedPeer::from_file("responder", "/etc/myapp/peers/responder.pub")?;
+let peer = PinnedPeer::from_file("responder", std::path::Path::new("/etc/myapp/peers/responder.pub"))?;
 
 let initiator = DhInitiator::new(csc_id, ssrc);
 let init_msg = initiator.init_message()?;
@@ -91,7 +91,7 @@ let keys = initiator.complete(&resp_msg, suite)?;
 use mykey::{DhResponder, Identity, PinnedPeer, srtp::SrtpCryptoSuite};
 
 let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
-let peer = PinnedPeer::from_file("initiator", "/etc/myapp/peers/initiator.pub")?;
+let peer = PinnedPeer::from_file("initiator", std::path::Path::new("/etc/myapp/peers/initiator.pub"))?;
 
 let init_msg = MikeyMessage::from_bytes(&init_bytes)?;
 
