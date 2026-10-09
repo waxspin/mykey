@@ -1189,8 +1189,18 @@ impl DhInitiator {
             .take()
             .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
 
-        let shared_secret = keypair.diffie_hellman(&peer_bytes);
-        let tgk = crypto::derive_tgk(&shared_secret, &self.rand_bytes, 32)?;
+        // Capture our own public key before the keypair is consumed; it is the
+        // initiator half of the pair bound into the derivation.
+        let own_public = *keypair.public.as_bytes();
+
+        let shared_secret = keypair.diffie_hellman(&peer_bytes)?;
+        let tgk = crypto::derive_tgk_x25519(
+            &shared_secret,
+            &own_public, // initiator — this side
+            &peer_bytes, // responder — the peer
+            &self.rand_bytes,
+            32,
+        )?;
 
         srtp::derive_srtp_keys(&tgk, &self.rand_bytes, 0, self.csc_id, suite)
     }
@@ -1251,8 +1261,18 @@ impl DhResponder {
             .take()
             .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
 
-        let shared_secret = keypair.diffie_hellman(&peer_bytes);
-        let tgk = crypto::derive_tgk(&shared_secret, rand, 32)?;
+        // Our own key is the responder half; the peer's is the initiator's.
+        // Ordering by role, not by caller, is what makes both sides agree.
+        let own_public = *keypair.public.as_bytes();
+
+        let shared_secret = keypair.diffie_hellman(&peer_bytes)?;
+        let tgk = crypto::derive_tgk_x25519(
+            &shared_secret,
+            &peer_bytes, // initiator — the peer
+            &own_public, // responder — this side
+            rand,
+            32,
+        )?;
 
         // The CSB ID is chosen by the initiator and carried in its header.
         srtp::derive_srtp_keys(&tgk, rand, 0, init.header.csc_id, suite)
@@ -1298,12 +1318,14 @@ mod tests {
 
         let rand = vec![0xABu8; 16];
 
-        let shared_a = alice.diffie_hellman(&bob_pub);
-        let shared_b = bob.diffie_hellman(&alice_pub);
+        let shared_a = alice.diffie_hellman(&bob_pub).unwrap();
+        let shared_b = bob.diffie_hellman(&alice_pub).unwrap();
         assert_eq!(shared_a, shared_b);
 
-        let tgk_a = crypto::derive_tgk(&shared_a, &rand, 32).unwrap();
-        let tgk_b = crypto::derive_tgk(&shared_b, &rand, 32).unwrap();
+        // Alice is the initiator, Bob the responder — both sides order the
+        // bound public keys by role, so both labels are identical.
+        let tgk_a = crypto::derive_tgk_x25519(&shared_a, &alice_pub, &bob_pub, &rand, 32).unwrap();
+        let tgk_b = crypto::derive_tgk_x25519(&shared_b, &alice_pub, &bob_pub, &rand, 32).unwrap();
         assert_eq!(tgk_a, tgk_b);
 
         let keys_a = srtp::derive_srtp_keys(&tgk_a, &rand, 0, 1, suite).unwrap();
@@ -1602,6 +1624,67 @@ mod tests {
         m.push(rand_len);
         m.extend_from_slice(&vec![0xAA; rand_len as usize]);
         m
+    }
+
+    // ── X25519 hardening (RFC 7748) ─────────────────────────────────────────
+
+    /// A peer that substitutes a small-order DH value forces an all-zero shared
+    /// secret it can predict. Both roles must refuse it at the message layer,
+    /// not just in `crypto`.
+    #[test]
+    fn test_small_order_dh_value_rejected_in_exchange() {
+        // Order-8 point; see crypto::tests::SMALL_ORDER_POINTS.
+        let small_order: [u8; 32] =
+            hex::decode("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+
+        // Initiator receives a hostile DH-Resp.
+        let initiator = DhInitiator::new(1, 2);
+        let hostile_resp = MikeyMessage::new_dh_resp(1, &small_order).unwrap();
+        assert!(matches!(
+            initiator.complete(&hostile_resp, suite),
+            Err(MikeyError::InvalidDhValue)
+        ));
+
+        // Responder receives a hostile DH-Init.
+        let hostile_init = MikeyMessage::new_dh_init(1, 2, &[0x11u8; 16], &small_order).unwrap();
+        assert!(matches!(
+            DhResponder::new().complete(&hostile_init, suite),
+            Err(MikeyError::InvalidDhValue)
+        ));
+    }
+
+    /// The bound public keys are ordered by protocol role, so an initiator and a
+    /// responder independently build the same label and agree on keys. This is
+    /// the property that would break if either side ordered by "own, peer".
+    #[test]
+    fn test_dh_role_ordering_agrees_end_to_end() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        for _ in 0..8 {
+            let initiator = DhInitiator::new(0x1234, 0x5678);
+            let init_msg = initiator.init_message().unwrap();
+            let responder = DhResponder::new();
+            let resp_msg = responder.resp_message(0x1234).unwrap();
+
+            let resp_keys = responder
+                .complete(
+                    &MikeyMessage::from_bytes(init_msg.to_bytes()).unwrap(),
+                    suite,
+                )
+                .unwrap();
+            let init_keys = initiator
+                .complete(
+                    &MikeyMessage::from_bytes(resp_msg.to_bytes()).unwrap(),
+                    suite,
+                )
+                .unwrap();
+
+            assert_eq!(init_keys.master_key, resp_keys.master_key);
+            assert_eq!(init_keys.master_salt, resp_keys.master_salt);
+        }
     }
 
     // ── PSK mode: §3.1 key transport ────────────────────────────────────────

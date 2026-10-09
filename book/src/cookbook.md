@@ -180,7 +180,7 @@ println!("{}", id.public_key_hex());
 ```rust,ignore
 use mykey::{PinnedPeer, MikeyError};
 
-let peer = PinnedPeer::from_file("rack-01", "/etc/myapp/peers/rack-01.pub")?;
+let peer = PinnedPeer::from_file("rack-01", std::path::Path::new("/etc/myapp/peers/rack-01.pub"))?;
 
 let dh_pub = incoming_msg.dh_public().ok_or(MikeyError::MissingPayload("DH"))?;
 peer.verify(dh_pub)?;   // Err if the key doesn't match

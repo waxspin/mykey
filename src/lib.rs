@@ -37,12 +37,17 @@
 //!
 //! ## Interoperability
 //!
-//! mykey is not a complete MIKEY implementation. The PRF and key derivation
-//! follow [RFC 3830] §4.1, but DH mode uses X25519 and omits the SIGN payload
-//! the RFC requires, and PSK mode does not yet encrypt the KEMAC. Every known
-//! departure is catalogued in the [Deviations from RFC 3830] chapter of the
-//! book — read it before assuming a mykey exchange will interoperate with
-//! another MIKEY stack.
+//! mykey is not a complete MIKEY implementation. Pre-shared key mode — the only
+//! method [RFC 3830] makes mandatory — follows the spec for key transport
+//! (§3.1), key wrapping (§4.2.3), key data framing (§6.13), MAC computation
+//! (§5.2) and verification messages (§6.9). DH mode does not: it uses X25519
+//! rather than an OAKLEY group and omits the SIGN payload the RFC requires, so
+//! it will not interoperate with another MIKEY stack.
+//!
+//! Two gaps remain even in PSK mode: the timestamp is the optional COUNTER type
+//! rather than a mandatory NTP type, and there is no replay protection. Every
+//! known departure is catalogued in the [Deviations from RFC 3830] chapter of
+//! the book — read it before assuming a mykey exchange will interoperate.
 //!
 //! [Deviations from RFC 3830]: https://waxspin.github.io/mykey/concepts/rfc-deviations.html
 //!

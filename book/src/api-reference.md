@@ -99,7 +99,7 @@ This page provides a navigational index of the public surface.
 | `Identity::save` | Save keypair to disk |
 | `Identity::public_key_hex` | Return the public key as a 64-character hex string |
 | `Identity::public_key_bytes` | Return the public key as 32 bytes |
-| `Identity::diffie_hellman` | Perform DH with a peer public key (takes `&self`, non-consuming) |
+| `Identity::diffie_hellman` | Perform DH with a peer public key (takes `&self`, non-consuming); rejects small-order peer keys |
 | `Identity::default_dir` | Platform default directory for key storage |
 | `PinnedPeer` | A peer's known public key |
 | `PinnedPeer::from_file` | Load from a file containing a hex-encoded public key |

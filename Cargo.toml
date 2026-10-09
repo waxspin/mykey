@@ -22,5 +22,30 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 # For SAP/SDP base64 encoding
 base64 = "0.22"
+
+# AES-CM key wrapping of the KEMAC payload (RFC 3830 §4.2.3)
 aes = "0.9"
 ctr = "0.10"
+
+[package.metadata.release]
+# cargo-release bumps Cargo.toml, but nothing in prose. The README's install
+# snippet pins an explicit version, so it needs rewriting too or it ships
+# pointing at the previous release.
+#
+# `exactly = 1` is deliberate: if the snippet is reworded so the pattern stops
+# matching, the release fails loudly instead of silently leaving a stale version.
+pre-release-replacements = [
+  { file = "README.md", search = 'mykey = "[0-9]+\.[0-9]+\.[0-9]+"', replace = 'mykey = "{{version}}"', exactly = 1 },
+  # Promote the accumulated [Unreleased] notes to a dated version heading, and
+  # leave [Unreleased] in place for the next cycle's entries.
+  { file = "CHANGELOG.md", search = '## \[Unreleased\]', replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+  # Re-base the Unreleased comparison on the version being cut, then insert a
+  # compare link for it so the bracketed headings resolve.
+  #
+  # These spell the tag as `v{{version}}` rather than using `{{tag_name}}`:
+  # the tag does not exist yet at the pre-release stage, so `{{tag_name}}` is
+  # left unrendered with only a warning. This assumes the default `v`-prefixed
+  # tag format — if `tag-prefix`/`tag-name` is ever customised, update these too.
+  { file = "CHANGELOG.md", search = '/compare/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.HEAD', replace = "/compare/v{{version}}...HEAD", exactly = 1 },
+  { file = "CHANGELOG.md", search = '<!-- next-compare -->', replace = "<!-- next-compare -->\n[{{version}}]: https://github.com/waxspin/mykey/compare/v{{prev_version}}...v{{version}}", exactly = 1 },
+]

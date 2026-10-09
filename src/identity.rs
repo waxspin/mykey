@@ -131,15 +131,23 @@ impl Identity {
         *self.public.as_bytes()
     }
 
-    /// Perform DH key exchange with a peer, consuming the static secret
-    /// to produce a shared secret.
+    /// Perform DH key exchange with a peer to produce a shared secret.
     ///
     /// Note: unlike `EphemeralSecret`, `StaticSecret` can be reused.
     /// This method takes `&self` so the identity persists across sessions.
-    pub fn diffie_hellman(&self, peer_public: &[u8; 32]) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhValue`] if the peer's public key has small
+    /// order, which would zero out this identity's contribution to the shared
+    /// secret (RFC 7748 §7).
+    pub fn diffie_hellman(&self, peer_public: &[u8; 32]) -> Result<Vec<u8>> {
         let peer = PublicKey::from(*peer_public);
         let shared = self.secret.diffie_hellman(&peer);
-        shared.as_bytes().to_vec()
+        if !shared.was_contributory() {
+            return Err(MikeyError::InvalidDhValue);
+        }
+        Ok(shared.as_bytes().to_vec())
     }
 
     /// Default config directory: `~/.config/mykey/`
@@ -259,8 +267,8 @@ mod tests {
 
         // DH should produce same shared secret
         let peer = Identity::generate();
-        let shared_a = original.diffie_hellman(&peer.public_key_bytes());
-        let shared_b = loaded.diffie_hellman(&peer.public_key_bytes());
+        let shared_a = original.diffie_hellman(&peer.public_key_bytes()).unwrap();
+        let shared_b = loaded.diffie_hellman(&peer.public_key_bytes()).unwrap();
         assert_eq!(shared_a, shared_b);
 
         let _ = fs::remove_dir_all(&dir);
@@ -321,8 +329,8 @@ mod tests {
         let alice = Identity::generate();
         let bob = Identity::generate();
 
-        let shared_a = alice.diffie_hellman(&bob.public_key_bytes());
-        let shared_b = bob.diffie_hellman(&alice.public_key_bytes());
+        let shared_a = alice.diffie_hellman(&bob.public_key_bytes()).unwrap();
+        let shared_b = bob.diffie_hellman(&alice.public_key_bytes()).unwrap();
         assert_eq!(shared_a, shared_b);
     }
 

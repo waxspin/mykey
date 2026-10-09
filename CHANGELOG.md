@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Small-order X25519 peer keys are now rejected.** `DhKeyPair::diffie_hellman`
+  and `Identity::diffie_hellman` check `was_contributory()`, so a peer cannot
+  force an all-zero shared secret that it can predict. RFC 7748 §7 notes such a
+  value "will eliminate any contribution from the other party's private key";
+  checking is optional in §6.1, and mykey rejects with `InvalidDhValue`. Nine
+  small-order points are covered by tests, each confirmed non-contributory
+  against the current `x25519-dalek` rather than copied from a blacklist.
+- **Both public keys are bound into the X25519 TGK derivation**, as RFC 7748
+  §6.1 asks ("a key-derivation function that includes K, K_A, and K_B").
+  Previously only the shared secret and RAND were used, which §7 warns against
+  where public keys serve as identifiers — as they do in `PinnedPeer`.
 - **PSK mode no longer transmits the TGK in the clear.** Following §3.1, the
   initiator now generates a random TGK and transports it encrypted with AES-CM
   (§4.2.3) under an encryption key and 112-bit salt derived from the pre-shared
@@ -38,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** `DhKeyPair::diffie_hellman` and `Identity::diffie_hellman` now
+  return `Result<Vec<u8>>` instead of `Vec<u8>`, so a small-order peer key can
+  be reported rather than silently producing a predictable secret.
+- **BREAKING:** the X25519 TGK is now derived by `derive_tgk_x25519`, which
+  takes both peers' public keys and binds them into the PRF label. Every
+  DH-mode key changes value. `derive_tgk` remains for inputs with no public
+  keys to bind.
 - **BREAKING:** `complete_psk` now verifies the message MAC and decrypts the
   transported TGK instead of re-deriving it from the pre-shared key. It returns
   `InvalidMac` for a message that does not authenticate. Both ends of an
@@ -103,3 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] - 2026-05-02
 
 Initial 1.0 release.
+
+<!-- Version links. The marker below is where cargo-release inserts the link for
+     each newly released version; see pre-release-replacements in Cargo.toml. -->
+[Unreleased]: https://github.com/waxspin/mykey/compare/v1.0.0...HEAD
+<!-- next-compare -->
+[1.0.0]: https://github.com/waxspin/mykey/releases/tag/v1.0.0
