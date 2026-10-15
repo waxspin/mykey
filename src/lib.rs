@@ -61,6 +61,8 @@ pub mod error;
 pub mod identity;
 /// MIKEY message builder, parser, and high-level DH/PSK exchange types.
 pub mod message;
+/// Finite-field Diffie-Hellman over the OAKLEY MODP groups (RFC 3830 §4.2.7).
+pub mod modp;
 /// Low-level RFC 3830 wire-format payload types.
 pub mod payload;
 /// SRTP security policy builder and parser.
