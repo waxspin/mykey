@@ -1,5 +1,6 @@
 use crate::crypto::{self, DhKeyPair};
 use crate::error::{MikeyError, Result};
+use crate::modp::ModpKeyPair;
 use crate::payload::*;
 use crate::srtp::{self, SrtpCryptoSuite, SrtpKeyMaterial};
 
@@ -10,6 +11,19 @@ pub enum KeyExchangeMethod {
     Psk,
     /// Diffie-Hellman with X25519
     DhX25519,
+}
+
+/// Reject an X25519 group or a wrong-width value on the MODP paths.
+fn check_modp_value(group: DhGroup, dh_public: &[u8]) -> Result<()> {
+    if group == DhGroup::X25519 {
+        return Err(MikeyError::Parse(
+            "X25519 is not a MODP group; use the non-modp constructor".into(),
+        ));
+    }
+    if dh_public.len() != group.key_len() {
+        return Err(MikeyError::InvalidDhValue);
+    }
+    Ok(())
 }
 
 /// Length of the randomly generated TGK transported in PSK mode.
@@ -425,65 +439,41 @@ impl MikeyMessage {
         ))
     }
 
-    /// Build a DH initiator message (data_type = 4)
+    /// Build a DH initiator message (data_type = 4) using X25519.
     pub fn new_dh_init(
         csc_id: u32,
         ssrc: u32,
         rand_bytes: &[u8],
         dh_public: &[u8; 32],
     ) -> Result<Self> {
-        let header = CommonHeader {
-            version: 1,
-            data_type: DataType::DhInit,
-            next_payload: PayloadType::T as u8,
-            v_flag: false,
-            prf_func: PrfFunc::MikeyPrfHmacSha1,
-            csc_id,
-            cs_count: 1,
-            cs_id_map_type: 0,
-            cs_id_map: vec![SrtpId {
-                policy_no: 0,
-                ssrc,
-                roc: 0,
-            }],
-        };
-
-        let timestamp = TimestampPayload {
-            next_payload: PayloadType::Rand as u8,
-            ts_type: TimestampType::Counter,
-            ts_value: csc_id.to_be_bytes().to_vec(),
-        };
-
-        let rand = RandPayload {
-            next_payload: PayloadType::Dh as u8,
-            rand: rand_bytes.to_vec(),
-        };
-
-        let dh = DhPayload {
-            next_payload: PayloadType::Last as u8,
-            dh_group: DhGroup::X25519,
-            dh_value: dh_public.to_vec(),
-            kv_type: 0,
-            kv_data: vec![],
-        };
-
-        let payloads = vec![
-            Payload::Timestamp(timestamp),
-            Payload::Rand(rand),
-            Payload::Dh(dh),
-        ];
-
-        let raw = Self::serialize(&header, &payloads);
-
-        Ok(Self {
-            header,
-            payloads,
-            raw,
-            mac_offset: None,
-        })
+        Self::build_dh_init(csc_id, ssrc, rand_bytes, DhGroup::X25519, dh_public, None)
     }
 
-    /// Build a DH initiator message with security policy (data_type = 4)
+    /// Build a DH initiator message in an OAKLEY MODP group (RFC 3830 §4.2.7).
+    ///
+    /// `dh_public` must be exactly [`DhGroup::key_len`] bytes, big-endian — the
+    /// DH-value width is implicit from the group (§6.4), so it is fixed-width
+    /// rather than minimal. [`ModpKeyPair::public_bytes`] produces this.
+    ///
+    /// [`ModpKeyPair::public_bytes`]: crate::modp::ModpKeyPair::public_bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhGroup`] if `group` is `X25519` (use
+    /// [`new_dh_init`](MikeyMessage::new_dh_init)) and
+    /// [`MikeyError::InvalidDhValue`] if `dh_public` is the wrong width.
+    pub fn new_dh_init_modp(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        group: DhGroup,
+        dh_public: &[u8],
+    ) -> Result<Self> {
+        check_modp_value(group, dh_public)?;
+        Self::build_dh_init(csc_id, ssrc, rand_bytes, group, dh_public, None)
+    }
+
+    /// Build a DH initiator message with a security policy, using X25519.
     pub fn new_dh_init_with_sp(
         csc_id: u32,
         ssrc: u32,
@@ -491,6 +481,42 @@ impl MikeyMessage {
         dh_public: &[u8; 32],
         sp: SpPayload,
     ) -> Result<Self> {
+        Self::build_dh_init(
+            csc_id,
+            ssrc,
+            rand_bytes,
+            DhGroup::X25519,
+            dh_public,
+            Some(sp),
+        )
+    }
+
+    /// Build a MODP DH initiator message with a security policy.
+    pub fn new_dh_init_modp_with_sp(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        group: DhGroup,
+        dh_public: &[u8],
+        sp: SpPayload,
+    ) -> Result<Self> {
+        check_modp_value(group, dh_public)?;
+        Self::build_dh_init(csc_id, ssrc, rand_bytes, group, dh_public, Some(sp))
+    }
+
+    /// Shared construction for both DH-Init shapes.
+    ///
+    /// The payload chain is `T, RAND, [SP,] DH`; the SP payload is spliced in
+    /// between RAND and DH when present, which is what changes RAND's
+    /// `next_payload`.
+    fn build_dh_init(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        group: DhGroup,
+        dh_public: &[u8],
+        sp: Option<SpPayload>,
+    ) -> Result<Self> {
         let header = CommonHeader {
             version: 1,
             data_type: DataType::DhInit,
@@ -514,27 +540,28 @@ impl MikeyMessage {
         };
 
         let rand = RandPayload {
-            next_payload: PayloadType::Sp as u8,
+            next_payload: if sp.is_some() {
+                PayloadType::Sp as u8
+            } else {
+                PayloadType::Dh as u8
+            },
             rand: rand_bytes.to_vec(),
         };
 
-        let mut sp = sp;
-        sp.next_payload = PayloadType::Dh as u8;
-
         let dh = DhPayload {
             next_payload: PayloadType::Last as u8,
-            dh_group: DhGroup::X25519,
+            dh_group: group,
             dh_value: dh_public.to_vec(),
             kv_type: 0,
             kv_data: vec![],
         };
 
-        let payloads = vec![
-            Payload::Timestamp(timestamp),
-            Payload::Rand(rand),
-            Payload::Sp(sp),
-            Payload::Dh(dh),
-        ];
+        let mut payloads = vec![Payload::Timestamp(timestamp), Payload::Rand(rand)];
+        if let Some(mut sp) = sp {
+            sp.next_payload = PayloadType::Dh as u8;
+            payloads.push(Payload::Sp(sp));
+        }
+        payloads.push(Payload::Dh(dh));
 
         let raw = Self::serialize(&header, &payloads);
 
@@ -546,8 +573,21 @@ impl MikeyMessage {
         })
     }
 
-    /// Build a DH responder message (data_type = 5)
+    /// Build a DH responder message (data_type = 5) using X25519.
     pub fn new_dh_resp(csc_id: u32, dh_public: &[u8; 32]) -> Result<Self> {
+        Self::build_dh_resp(csc_id, DhGroup::X25519, dh_public)
+    }
+
+    /// Build a DH responder message in an OAKLEY MODP group.
+    ///
+    /// The group must match the one the initiator chose — §4.2.7 has the
+    /// initiator select it and signal it in the DH payload.
+    pub fn new_dh_resp_modp(csc_id: u32, group: DhGroup, dh_public: &[u8]) -> Result<Self> {
+        check_modp_value(group, dh_public)?;
+        Self::build_dh_resp(csc_id, group, dh_public)
+    }
+
+    fn build_dh_resp(csc_id: u32, group: DhGroup, dh_public: &[u8]) -> Result<Self> {
         let header = CommonHeader {
             version: 1,
             data_type: DataType::DhResp,
@@ -562,7 +602,7 @@ impl MikeyMessage {
 
         let dh = DhPayload {
             next_payload: PayloadType::Last as u8,
-            dh_group: DhGroup::X25519,
+            dh_group: group,
             dh_value: dh_public.to_vec(),
             kv_type: 0,
             kv_data: vec![],
@@ -998,6 +1038,14 @@ impl MikeyMessage {
         None
     }
 
+    /// Get the DH group signalled by this message's DH payload.
+    pub fn dh_group(&self) -> Option<DhGroup> {
+        self.payloads.iter().find_map(|p| match p {
+            Payload::Dh(dh) => Some(dh.dh_group),
+            _ => None,
+        })
+    }
+
     /// Get the DH public value from this message
     pub fn dh_public(&self) -> Option<&[u8]> {
         for p in &self.payloads {
@@ -1282,6 +1330,196 @@ impl DhResponder {
 impl Default for DhResponder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Perform a complete DH key exchange over an OAKLEY MODP group (initiator).
+///
+/// The MODP counterpart to [`DhInitiator`]. Kept as a separate type so the
+/// X25519 path cannot be reached with MODP parameters or vice versa.
+///
+/// Like [`DhInitiator`] this is **unauthenticated** — RFC 3830 §3.3 expects a
+/// SIGN payload, which mykey does not implement, so a conformant peer will
+/// reject these messages. OAKLEY support exists as the groundwork for RFC 4650
+/// (MIKEY-DHHMAC), which authenticates the exchange with a pre-shared key
+/// instead of signatures. Until then, prefer [`DhInitiator`] with
+/// [peer pinning](crate::identity) on untrusted networks.
+pub struct ModpInitiator {
+    keypair: Option<ModpKeyPair>,
+    group: DhGroup,
+    rand_bytes: Vec<u8>,
+    csc_id: u32,
+    ssrc: u32,
+}
+
+impl ModpInitiator {
+    /// Create an initiator with a fresh ephemeral key pair in `group`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `group` is `X25519` — use [`DhInitiator`] for that.
+    pub fn new(csc_id: u32, ssrc: u32, group: DhGroup) -> Result<Self> {
+        let keypair = ModpKeyPair::generate(group)?;
+        let mut rand_bytes = vec![0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut rand_bytes);
+
+        Ok(Self {
+            keypair: Some(keypair),
+            group,
+            rand_bytes,
+            csc_id,
+            ssrc,
+        })
+    }
+
+    /// The group this exchange uses.
+    pub fn group(&self) -> DhGroup {
+        self.group
+    }
+
+    /// Build the init message to send to the responder.
+    pub fn init_message(&self) -> Result<MikeyMessage> {
+        let public = self.public_bytes()?;
+        MikeyMessage::new_dh_init_modp(
+            self.csc_id,
+            self.ssrc,
+            &self.rand_bytes,
+            self.group,
+            &public,
+        )
+    }
+
+    /// Build the init message with a security policy.
+    pub fn init_message_with_sp(&self, sp: SpPayload) -> Result<MikeyMessage> {
+        let public = self.public_bytes()?;
+        MikeyMessage::new_dh_init_modp_with_sp(
+            self.csc_id,
+            self.ssrc,
+            &self.rand_bytes,
+            self.group,
+            &public,
+            sp,
+        )
+    }
+
+    fn public_bytes(&self) -> Result<Vec<u8>> {
+        Ok(self
+            .keypair
+            .as_ref()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
+            .public_bytes())
+    }
+
+    /// Process the responder's message and derive SRTP keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhGroup`] if the responder answered in a
+    /// different group than was offered, and [`MikeyError::InvalidDhValue`] if
+    /// its public value fails validation.
+    pub fn complete(
+        mut self,
+        resp: &MikeyMessage,
+        suite: SrtpCryptoSuite,
+    ) -> Result<SrtpKeyMaterial> {
+        let peer_pub = resp
+            .dh_public()
+            .ok_or(MikeyError::MissingPayload("DH"))?
+            .to_vec();
+
+        // The responder must answer in the group the initiator chose (§4.2.7).
+        let peer_group = resp.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        if peer_group != self.group {
+            return Err(MikeyError::InvalidDhGroup);
+        }
+
+        let keypair = self
+            .keypair
+            .take()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
+
+        // RFC 3830 §3.3: the TGK *is* the DH result, used raw. The X25519 path
+        // runs it through the PRF because no conformant X25519 mode exists to
+        // match; doing that here would break interoperability, which is the
+        // entire reason these groups are supported.
+        let tgk = keypair.diffie_hellman(&peer_pub)?;
+
+        srtp::derive_srtp_keys(&tgk, &self.rand_bytes, 0, self.csc_id, suite)
+    }
+}
+
+/// Perform a complete DH key exchange over an OAKLEY MODP group (responder).
+///
+/// See [`ModpInitiator`] for the authentication caveat.
+pub struct ModpResponder {
+    keypair: Option<ModpKeyPair>,
+    group: DhGroup,
+}
+
+impl ModpResponder {
+    /// Create a responder with a fresh ephemeral key pair in `group`.
+    pub fn new(group: DhGroup) -> Result<Self> {
+        Ok(Self {
+            keypair: Some(ModpKeyPair::generate(group)?),
+            group,
+        })
+    }
+
+    /// Create a responder in whichever group the initiator's message offered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::MissingPayload`] if there is no DH payload, and an
+    /// error if the offered group is `X25519` rather than a MODP group.
+    pub fn for_offer(init: &MikeyMessage) -> Result<Self> {
+        let group = init.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        Self::new(group)
+    }
+
+    /// The group this exchange uses.
+    pub fn group(&self) -> DhGroup {
+        self.group
+    }
+
+    /// Build the response message.
+    pub fn resp_message(&self, csc_id: u32) -> Result<MikeyMessage> {
+        let public = self
+            .keypair
+            .as_ref()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
+            .public_bytes();
+        MikeyMessage::new_dh_resp_modp(csc_id, self.group, &public)
+    }
+
+    /// Process the initiator's message and derive SRTP keys.
+    pub fn complete(
+        mut self,
+        init: &MikeyMessage,
+        suite: SrtpCryptoSuite,
+    ) -> Result<SrtpKeyMaterial> {
+        let peer_pub = init
+            .dh_public()
+            .ok_or(MikeyError::MissingPayload("DH"))?
+            .to_vec();
+        let rand = init
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?
+            .to_vec();
+
+        let peer_group = init.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        if peer_group != self.group {
+            return Err(MikeyError::InvalidDhGroup);
+        }
+
+        let keypair = self
+            .keypair
+            .take()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
+
+        // As on the initiator side: raw DH result as the TGK, per §3.3.
+        let tgk = keypair.diffie_hellman(&peer_pub)?;
+
+        srtp::derive_srtp_keys(&tgk, &rand, 0, init.header.csc_id, suite)
     }
 }
 
@@ -1624,6 +1862,124 @@ mod tests {
         m.push(rand_len);
         m.extend_from_slice(&vec![0xAA; rand_len as usize]);
         m
+    }
+
+    // ── OAKLEY MODP exchange (RFC 3830 §4.2.7) ──────────────────────────────
+
+    /// The X25519 wire format must not drift. These bytes were captured before
+    /// the DH builders were refactored to share a core with the MODP paths; the
+    /// refactor is only safe if they are unchanged.
+    #[test]
+    fn test_x25519_dh_wire_format_is_stable() {
+        let pubkey = [0x42u8; 32];
+        let rand = [0x5Au8; 16];
+
+        let init = MikeyMessage::new_dh_init(0x1234_5678, 0xDEAD_BEEF, &rand, &pubkey).unwrap();
+        assert_eq!(
+            hex::encode(init.to_bytes()),
+            "0104050012345678010000deadbeef000000000b021234567803105a5a5a5a5a5a5a             5a5a5a5a5a5a5a5a5a00ff4242424242424242424242424242424242424242424242             42424242424242424200".replace(' ', "")
+        );
+
+        let resp = MikeyMessage::new_dh_resp(0x1234_5678, &pubkey).unwrap();
+        assert_eq!(
+            hex::encode(resp.to_bytes()),
+            "0105030012345678000000ff42424242424242424242424242424242424242424242             4242424242424242424200".replace(' ', "")
+        );
+    }
+
+    #[test]
+    fn test_modp_exchange_agrees_in_every_group() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        for group in [DhGroup::Oakley1, DhGroup::Oakley2, DhGroup::Oakley5] {
+            let initiator = ModpInitiator::new(0x1234, 0x5678, group).unwrap();
+            let init_msg = initiator.init_message().unwrap();
+
+            // Responder adopts whichever group was offered.
+            let parsed_init = MikeyMessage::from_bytes(init_msg.to_bytes()).unwrap();
+            let responder = ModpResponder::for_offer(&parsed_init).unwrap();
+            assert_eq!(responder.group(), group);
+            let resp_msg = responder.resp_message(0x1234).unwrap();
+
+            let resp_keys = responder.complete(&parsed_init, suite).unwrap();
+            let parsed_resp = MikeyMessage::from_bytes(resp_msg.to_bytes()).unwrap();
+            let init_keys = initiator.complete(&parsed_resp, suite).unwrap();
+
+            assert_eq!(init_keys.master_key, resp_keys.master_key, "{group:?}");
+            assert_eq!(init_keys.master_salt, resp_keys.master_salt, "{group:?}");
+        }
+    }
+
+    #[test]
+    fn test_modp_signals_the_group_on_the_wire() {
+        for (group, code) in [
+            (DhGroup::Oakley5, 0u8),
+            (DhGroup::Oakley1, 1),
+            (DhGroup::Oakley2, 2),
+        ] {
+            let init = ModpInitiator::new(1, 2, group)
+                .unwrap()
+                .init_message()
+                .unwrap();
+            let parsed = MikeyMessage::from_bytes(init.to_bytes()).unwrap();
+            assert_eq!(parsed.dh_group(), Some(group));
+            assert_eq!(group as u8, code, "DH-Group code point per Table 6.4");
+            // The DH value is fixed-width for the group (§6.4).
+            assert_eq!(parsed.dh_public().unwrap().len(), group.key_len());
+        }
+    }
+
+    /// A responder answering in a different group than was offered must be
+    /// rejected — §4.2.7 has the initiator choose, and silently accepting a
+    /// substitution would be a downgrade path.
+    #[test]
+    fn test_modp_group_mismatch_rejected() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+
+        let initiator = ModpInitiator::new(1, 2, DhGroup::Oakley5).unwrap();
+        let hostile = ModpResponder::new(DhGroup::Oakley2).unwrap();
+        let hostile_resp = hostile.resp_message(1).unwrap();
+
+        assert!(matches!(
+            initiator.complete(&hostile_resp, suite),
+            Err(MikeyError::InvalidDhGroup)
+        ));
+
+        // And the same check on the responder side.
+        let init_msg = ModpInitiator::new(1, 2, DhGroup::Oakley1)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let responder = ModpResponder::new(DhGroup::Oakley5).unwrap();
+        assert!(matches!(
+            responder.complete(&init_msg, suite),
+            Err(MikeyError::InvalidDhGroup)
+        ));
+    }
+
+    #[test]
+    fn test_modp_builders_reject_x25519_and_bad_widths() {
+        // X25519 must go through the non-modp constructors.
+        assert!(
+            MikeyMessage::new_dh_init_modp(1, 2, &[0u8; 16], DhGroup::X25519, &[0u8; 32]).is_err()
+        );
+        assert!(MikeyMessage::new_dh_resp_modp(1, DhGroup::X25519, &[0u8; 32]).is_err());
+
+        // Wrong-width DH value for the declared group.
+        assert!(matches!(
+            MikeyMessage::new_dh_init_modp(1, 2, &[0u8; 16], DhGroup::Oakley5, &[0u8; 64]),
+            Err(MikeyError::InvalidDhValue)
+        ));
+    }
+
+    #[test]
+    fn test_modp_with_security_policy_round_trips() {
+        let sp = crate::policy::SrtpPolicy::aes_128_default().to_sp_payload(0);
+        let initiator = ModpInitiator::new(0xAAAA, 0xBBBB, DhGroup::Oakley5).unwrap();
+        let msg = initiator.init_message_with_sp(sp).unwrap();
+        let parsed = MikeyMessage::from_bytes(msg.to_bytes()).unwrap();
+
+        assert_eq!(parsed.dh_group(), Some(DhGroup::Oakley5));
+        assert!(parsed.security_policy().is_some());
     }
 
     // ── X25519 hardening (RFC 7748) ─────────────────────────────────────────

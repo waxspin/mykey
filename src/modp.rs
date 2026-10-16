@@ -1,0 +1,386 @@
+//! Finite-field Diffie-Hellman over the OAKLEY MODP groups (RFC 3830 §4.2.7).
+//!
+//! RFC 3830 mandates OAKLEY 5 for the DH method and permits OAKLEY 1 and 2.
+//! This module provides those groups; X25519 remains mykey's default, on
+//! private-use DH-Group 255. See the "Deviations from RFC 3830" chapter.
+//!
+//! # Why these groups are weaker
+//!
+//! OAKLEY 5 offers roughly 90–120 bits of security (RFC 3526 §8), below
+//! X25519's ~128, and all three are single fixed universal groups where
+//! precomputation amortises across every session. They exist here for
+//! interoperability, not because they are preferable.
+
+use crypto_bigint::{
+    ctutils::{CtEq, CtGt, CtLt},
+    modular::{BoxedMontyForm, BoxedMontyParams},
+    BoxedUint, Odd, Resize,
+};
+use rand::RngCore;
+
+use crate::error::{MikeyError, Result};
+use crate::payload::DhGroup;
+
+/// 768-bit MODP prime, RFC 2409 §6.1. Generator is 2.
+const OAKLEY_1_PRIME_HEX: &str = concat!(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74",
+    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437",
+    "4FE1356D6D51C245E485B576625E7EC6F44C42E9A63A3620FFFFFFFFFFFFFFFF",
+);
+
+/// 1024-bit MODP prime, RFC 2409 §6.2. Generator is 2.
+const OAKLEY_2_PRIME_HEX: &str = concat!(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74",
+    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437",
+    "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED",
+    "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF",
+);
+
+/// 1536-bit MODP prime, RFC 3526 §2. Generator is 2.
+const OAKLEY_5_PRIME_HEX: &str = concat!(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74",
+    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437",
+    "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED",
+    "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05",
+    "98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB",
+    "9ED529077096966D670C354E4ABC9804F1746C08CA237327FFFFFFFFFFFFFFFF",
+);
+
+/// Length of the ephemeral private exponent, in bytes.
+///
+/// RFC 3526 §8 estimates OAKLEY 5 at 90–120 bits of strength and recommends an
+/// exponent of 180–240 bits. 256 bits clears the upper figure for the strongest
+/// group offered here, and keeps the exponentiation roughly six times cheaper
+/// than a full-width exponent would be. The modulus remains the limiting
+/// factor, which is the intended shape.
+const PRIVATE_EXPONENT_LEN: usize = 32;
+
+/// An OAKLEY MODP group: a safe prime `p` with generator 2.
+///
+/// `g = 2` generates the order-`q` subgroup where `q = (p-1)/2`, which is what
+/// makes the subgroup membership test in [`ModpKeyPair::diffie_hellman`] valid.
+pub struct ModpGroup {
+    group: DhGroup,
+    bits: u32,
+    p: BoxedUint,
+    /// `(p-1)/2`, derived rather than stored as a second constant that could
+    /// disagree with `p`.
+    q: BoxedUint,
+    params: BoxedMontyParams,
+}
+
+impl ModpGroup {
+    /// Resolve a [`DhGroup`] to its parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhGroup`] for `DhGroup::X25519`, which is an
+    /// elliptic curve rather than a MODP group.
+    pub fn new(group: DhGroup) -> Result<Self> {
+        let (hex, bits) = match group {
+            DhGroup::Oakley1 => (OAKLEY_1_PRIME_HEX, 768u32),
+            DhGroup::Oakley2 => (OAKLEY_2_PRIME_HEX, 1024),
+            DhGroup::Oakley5 => (OAKLEY_5_PRIME_HEX, 1536),
+            DhGroup::X25519 => {
+                return Err(MikeyError::Parse(
+                    "X25519 is not a MODP group; use DhKeyPair".into(),
+                ))
+            }
+        };
+
+        let bytes = hex_to_bytes(hex)?;
+        let p = BoxedUint::from_be_slice(&bytes, bits)
+            .map_err(|e| MikeyError::Crypto(format!("MODP prime decode: {e}")))?;
+        let q = &p >> 1; // (p-1)/2 for an odd p
+        let odd_p = Odd::new(p.clone())
+            .into_option()
+            .ok_or_else(|| MikeyError::Crypto("MODP prime is even".into()))?;
+        let params = BoxedMontyParams::new(odd_p);
+
+        Ok(Self {
+            group,
+            bits,
+            p,
+            q,
+            params,
+        })
+    }
+
+    /// The DH-Group code point this group is signalled by.
+    pub fn dh_group(&self) -> DhGroup {
+        self.group
+    }
+
+    /// Width of a public value in bytes, per RFC 3830 §6.4 Table 6.4.
+    pub fn public_len(&self) -> usize {
+        self.bits as usize / 8
+    }
+
+    /// Validate a peer's public value.
+    ///
+    /// Two checks, which together are NIST SP 800-56A full public key
+    /// validation for a safe-prime group:
+    ///
+    /// * `1 < y < p-1` — rejects the trivial subgroup `{1, p-1}` and the
+    ///   degenerate `0`.
+    /// * `y^q mod p == 1` — confirms `y` lies in the order-`q` subgroup
+    ///   generated by 2, rejecting small-subgroup values.
+    ///
+    /// The second check costs a full exponentiation, which is why many
+    /// implementations skip it. Skipping it is how small-subgroup confinement
+    /// attacks get in, so it is done here.
+    fn validate_peer(&self, y: &BoxedUint) -> Result<()> {
+        let one = BoxedUint::one_with_precision(self.bits);
+        let two = BoxedUint::from(2u8).resize(self.bits);
+        let p_minus_2 = &self.p - &two;
+
+        // 1 < y < p-1, expressed with strict comparisons: reject y < 2 and
+        // y > p-2. Both are constant-time.
+        let too_small = y.ct_lt(&two);
+        let too_large = y.ct_gt(&p_minus_2);
+        if bool::from(too_small | too_large) {
+            return Err(MikeyError::InvalidDhValue);
+        }
+
+        // y^q mod p == 1
+        let y_q = BoxedMontyForm::new(y.clone(), &self.params)
+            .pow(&self.q)
+            .retrieve();
+        if !bool::from(y_q.ct_eq(&one)) {
+            return Err(MikeyError::InvalidDhValue);
+        }
+
+        Ok(())
+    }
+}
+
+/// An ephemeral MODP Diffie-Hellman key pair.
+///
+/// The counterpart to [`DhKeyPair`](crate::crypto::DhKeyPair), which covers
+/// X25519. Kept as a separate type rather than a variant of it so that the
+/// X25519 path cannot be reached with MODP parameters or vice versa — a
+/// mismatch is a compile error rather than a runtime one.
+pub struct ModpKeyPair {
+    group: ModpGroup,
+    private: BoxedUint,
+    public: BoxedUint,
+}
+
+impl ModpKeyPair {
+    /// Generate a fresh ephemeral key pair in the given group.
+    ///
+    /// The private exponent is [`PRIVATE_EXPONENT_LEN`] bytes drawn from the OS
+    /// CSPRNG. Being far shorter than `q`, it is always in range; values below
+    /// 2 are redrawn.
+    pub fn generate(group: DhGroup) -> Result<Self> {
+        let group = ModpGroup::new(group)?;
+        let bits = group.bits;
+
+        let private = loop {
+            let mut buf = [0u8; PRIVATE_EXPONENT_LEN];
+            rand::rng().fill_bytes(&mut buf);
+            let x = BoxedUint::from_be_slice(&buf, bits)
+                .map_err(|e| MikeyError::Crypto(format!("exponent decode: {e}")))?;
+            // Reject 0 and 1, which would leak the private key or fix the
+            // public value. Astronomically unlikely; cheap to exclude.
+            if !bool::from(x.ct_lt(&BoxedUint::from(2u8).resize(bits))) {
+                break x;
+            }
+        };
+
+        let g = BoxedMontyForm::new(BoxedUint::from(2u8).resize(bits), &group.params);
+        let public = g.pow(&private).retrieve();
+
+        Ok(Self {
+            group,
+            private,
+            public,
+        })
+    }
+
+    /// The group this key pair belongs to.
+    pub fn group(&self) -> &ModpGroup {
+        &self.group
+    }
+
+    /// This side's public value, big-endian and left-padded to the group width.
+    ///
+    /// RFC 3830 §6.4 derives the DH-value length from the group, so the encoding
+    /// is fixed-width rather than minimal.
+    pub fn public_bytes(&self) -> Vec<u8> {
+        let want = self.group.public_len();
+        let raw = self.public.to_be_bytes();
+        let mut out = vec![0u8; want];
+        // `to_be_bytes` is already `bits/8` wide for a BoxedUint at this
+        // precision, but pad defensively rather than assume.
+        let start = want.saturating_sub(raw.len());
+        out[start..].copy_from_slice(&raw[raw.len().saturating_sub(want)..]);
+        out
+    }
+
+    /// Complete the exchange, consuming the private exponent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidDhValue`] if the peer value is the wrong
+    /// length, outside `1 < y < p-1`, or outside the order-`q` subgroup.
+    pub fn diffie_hellman(self, peer_public: &[u8]) -> Result<Vec<u8>> {
+        if peer_public.len() != self.group.public_len() {
+            return Err(MikeyError::InvalidDhValue);
+        }
+
+        let y = BoxedUint::from_be_slice(peer_public, self.group.bits)
+            .map_err(|_| MikeyError::InvalidDhValue)?;
+
+        self.group.validate_peer(&y)?;
+
+        let shared = BoxedMontyForm::new(y, &self.group.params)
+            .pow(&self.private)
+            .retrieve();
+
+        // Fixed-width, matching the group — the shared secret feeds the PRF, so
+        // both sides must agree on its encoding byte for byte.
+        let want = self.group.public_len();
+        let raw = shared.to_be_bytes();
+        let mut out = vec![0u8; want];
+        let start = want.saturating_sub(raw.len());
+        out[start..].copy_from_slice(&raw[raw.len().saturating_sub(want)..]);
+        Ok(out)
+    }
+}
+
+fn hex_to_bytes(h: &str) -> Result<Vec<u8>> {
+    hex::decode(h).map_err(|e| MikeyError::Crypto(format!("MODP prime hex: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_group_parameters_have_expected_widths() {
+        for (g, bits) in [
+            (DhGroup::Oakley1, 768usize),
+            (DhGroup::Oakley2, 1024),
+            (DhGroup::Oakley5, 1536),
+        ] {
+            let grp = ModpGroup::new(g).unwrap();
+            assert_eq!(grp.public_len(), bits / 8);
+            assert_eq!(grp.public_len(), g.key_len(), "must match Table 6.4");
+        }
+    }
+
+    #[test]
+    fn test_x25519_is_not_a_modp_group() {
+        assert!(ModpGroup::new(DhGroup::X25519).is_err());
+    }
+
+    /// Known-answer test against values computed independently with Python's
+    /// `pow()` for OAKLEY 5, so the group constant and the exponentiation are
+    /// both pinned.
+    #[test]
+    fn test_oakley5_known_answer() {
+        let grp = ModpGroup::new(DhGroup::Oakley5).unwrap();
+        let a = BoxedUint::from(0x1234_5678_9abc_def0u64).resize(grp.bits);
+        let g = BoxedMontyForm::new(BoxedUint::from(2u8).resize(grp.bits), &grp.params);
+        let ga = g.pow(&a).retrieve();
+
+        let expected = "74b62e09f32502764263c9fef04e47fc5d819dcf603d9aa2b75448518a0f01a3\
+                        19b0c6aa98712caf053fbc169e6831393547f313a4b21b2ba7b326d7bb960d46\
+                        13100e69286f8e759c0a5b7e37a23a11a9d6765da8c166bc79d6f02e5578c9c9\
+                        81e7c31414cf29348b0c31e91951d808f0a20ebe7b6c736756f4b309bf6af3c4\
+                        99ff519c93910ee974f5e82a2e56847457c202013cbea0020a49137ecc37266f\
+                        511386492509afed50a0cb68aeae07a43b6d999a3f9f7d46a353df60bf33ad45";
+        assert_eq!(hex::encode(ga.to_be_bytes()), expected);
+    }
+
+    #[test]
+    fn test_exchange_agrees_in_every_group() {
+        for g in [DhGroup::Oakley1, DhGroup::Oakley2, DhGroup::Oakley5] {
+            let a = ModpKeyPair::generate(g).unwrap();
+            let b = ModpKeyPair::generate(g).unwrap();
+            let (a_pub, b_pub) = (a.public_bytes(), b.public_bytes());
+
+            assert_eq!(a_pub.len(), g.key_len());
+            let sa = a.diffie_hellman(&b_pub).unwrap();
+            let sb = b.diffie_hellman(&a_pub).unwrap();
+            assert_eq!(sa, sb, "both sides must agree in {g:?}");
+            assert_eq!(sa.len(), g.key_len(), "shared secret is group-width");
+        }
+    }
+
+    #[test]
+    fn test_degenerate_peer_values_rejected() {
+        let g = DhGroup::Oakley5;
+        let width = g.key_len();
+        let grp = ModpGroup::new(g).unwrap();
+
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        cases.push(("zero", vec![0u8; width]));
+
+        let mut one = vec![0u8; width];
+        one[width - 1] = 1;
+        cases.push(("one", one));
+
+        let p_bytes = grp.p.to_be_bytes().to_vec();
+        cases.push(("p", p_bytes.clone()));
+
+        let p_minus_1 = (&grp.p - &BoxedUint::one_with_precision(grp.bits))
+            .to_be_bytes()
+            .to_vec();
+        cases.push(("p-1", p_minus_1));
+
+        for (label, bytes) in cases {
+            let kp = ModpKeyPair::generate(g).unwrap();
+            assert!(
+                matches!(kp.diffie_hellman(&bytes), Err(MikeyError::InvalidDhValue)),
+                "peer value {label} must be rejected"
+            );
+        }
+    }
+
+    /// A value outside the order-`q` subgroup must be refused even though it
+    /// satisfies `1 < y < p-1`. This is the check the range test alone misses.
+    #[test]
+    fn test_non_subgroup_peer_value_rejected() {
+        let g = DhGroup::Oakley5;
+        let grp = ModpGroup::new(g).unwrap();
+
+        // Find a quadratic non-residue by trial; for a safe prime, half of
+        // 2..p-1 are non-residues, so this terminates immediately.
+        let mut candidate = BoxedUint::from(3u8).resize(grp.bits);
+        let one = BoxedUint::one_with_precision(grp.bits);
+        let found = loop {
+            let r = BoxedMontyForm::new(candidate.clone(), &grp.params)
+                .pow(&grp.q)
+                .retrieve();
+            if !bool::from(r.ct_eq(&one)) {
+                break candidate;
+            }
+            candidate = &candidate + &one;
+        };
+
+        let bytes = found.to_be_bytes().to_vec();
+        let kp = ModpKeyPair::generate(g).unwrap();
+        assert!(
+            matches!(kp.diffie_hellman(&bytes), Err(MikeyError::InvalidDhValue)),
+            "a non-subgroup value must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_wrong_length_peer_value_rejected() {
+        let kp = ModpKeyPair::generate(DhGroup::Oakley5).unwrap();
+        assert!(matches!(
+            kp.diffie_hellman(&[0u8; 32]),
+            Err(MikeyError::InvalidDhValue)
+        ));
+    }
+
+    #[test]
+    fn test_public_values_differ_per_keypair() {
+        let a = ModpKeyPair::generate(DhGroup::Oakley5).unwrap();
+        let b = ModpKeyPair::generate(DhGroup::Oakley5).unwrap();
+        assert_ne!(a.public_bytes(), b.public_bytes());
+    }
+}

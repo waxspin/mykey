@@ -34,6 +34,9 @@ This page provides a navigational index of the public surface.
 | `MikeyMessage::from_bytes` | Parse a wire-format MIKEY message |
 | `MikeyMessage::new_dh_init` | Build a DH-Init message |
 | `MikeyMessage::new_dh_resp` | Build a DH-Resp message |
+| `MikeyMessage::new_dh_init_modp` | Build a DH-Init in an OAKLEY MODP group |
+| `MikeyMessage::new_dh_resp_modp` | Build a DH-Resp in an OAKLEY MODP group |
+| `MikeyMessage::dh_group` | Read the DH group a message signals |
 | `MikeyMessage::new_psk_init` | Build a PSK-Init message (no verification requested) |
 | `MikeyMessage::new_psk_init_requiring_verification` | Build a PSK-Init that sets the V flag, for mutual authentication |
 | `MikeyMessage::new_psk_verification` | Build the responder's verification message (§6.9) |
@@ -57,6 +60,23 @@ This page provides a navigational index of the public surface.
 | `SrtpCryptoSuite` | Describes a key/salt length pair; includes `AES_128_CM_SHA1_80` and `AES_256_CM_SHA1_80` |
 | `SrtpKeyMaterial` | Holds `master_key: Vec<u8>` and `master_salt: Vec<u8>` |
 | `derive_srtp_keys` | Low-level: derive key material from TGK + RAND + CS ID + CSB ID + suite (RFC 3830 §4.1.3) |
+
+---
+
+## `mykey::modp`
+
+Finite-field Diffie-Hellman over the OAKLEY MODP groups. Opt-in; X25519 remains
+the default.
+
+| Item | Description |
+|---|---|
+| `ModpGroup` | Resolved group parameters (safe prime, generator 2) for a `DhGroup` |
+| `ModpKeyPair` | Ephemeral MODP key pair; `generate`, `public_bytes`, `diffie_hellman` |
+
+| Item | Description |
+|---|---|
+| `ModpInitiator` | MODP counterpart to `DhInitiator` |
+| `ModpResponder` | MODP counterpart to `DhResponder`; `for_offer` adopts the initiator's group |
 
 ---
 
@@ -119,7 +139,7 @@ Low-level payload types. Most users should not need these directly — they are 
 | `TimestampPayload` | TS payload (type 5) |
 | `RandPayload` | RAND nonce payload (type 11) |
 | `DhPayload` | DH public key payload (type 3) |
-| `DhGroup` | DH group enum; `X25519 = 255` |
+| `DhGroup` | DH group enum; OAKLEY `5 = 0`, `1 = 1`, `2 = 2`, and `X25519 = 255` |
 | `KemacPayload` | KEMAC payload (type 1) — carries the encrypted key data in PSK mode |
 | `KeyDataSubPayload` | Key data sub-payload (§6.13) — the framed TGK inside a KEMAC |
 | `KeyDataType` | Key kind: `Tgk`, `TgkSalt`, `Tek`, `TekSalt` (Table 6.13.a) |
