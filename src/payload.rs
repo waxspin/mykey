@@ -106,6 +106,10 @@ pub enum DataType {
     DhResp = 5,
     /// Error message
     Error = 6,
+    /// DHHMAC initiator (RFC 4650)
+    DhHmacInit = 7,
+    /// DHHMAC responder (RFC 4650)
+    DhHmacResp = 8,
 }
 
 impl DataType {
@@ -118,6 +122,8 @@ impl DataType {
             4 => Some(Self::DhInit),
             5 => Some(Self::DhResp),
             6 => Some(Self::Error),
+            7 => Some(Self::DhHmacInit),
+            8 => Some(Self::DhHmacResp),
             _ => None,
         }
     }

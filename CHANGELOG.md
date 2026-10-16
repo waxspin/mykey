@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HMAC-authenticated Diffie-Hellman (RFC 4650, MIKEY-DHHMAC)** via
+  `DhHmacInitiator` / `DhHmacResponder`, data types 7 and 8. The DH half-keys
+  are authenticated with an HMAC keyed from a pre-shared secret instead of a
+  signature, giving forward secrecy **and** mutual authentication with no PKI —
+  the mode that makes the OAKLEY groups useful, since plain DH mode is
+  unauthenticated ([#24]).
+
+  Unlike PSK mode the pre-shared secret never encrypts the session key, so
+  compromising it later does not expose recorded sessions.
+
+  The HMAC is verified **before** the DH computation, so an unauthenticated
+  message yields no key material. The TGK is the raw `g^(xi*xr)` per §3 and
+  RFC 3830 §3.3.
+
+  **Note:** RFC 4650 §4.2 states `Encr alg` should be "2 (NULL)" and gives a
+  MAC alg table with HMAC-SHA-1 = 0 / NULL = 1. Both contradict RFC 3830 §6.2,
+  which normatively defines these fields as NULL = 0 and HMAC-SHA-1-160 = 1.
+  mykey follows RFC 3830, as libmikey and Wireshark both do. The MAC alg swap
+  is security-relevant — reading a peer's "HMAC present" as "no MAC" — so
+  `MAC alg = 0` is treated as NULL and refused rather than accepted.
+
+- `MikeyMessage::new_dhhmac_init`, `new_dhhmac_resp` and `verify_dhhmac` for
+  building and authenticating DHHMAC messages directly.
+- `DataType::DhHmacInit` (7) and `DataType::DhHmacResp` (8).
+
 - **OAKLEY MODP Diffie-Hellman groups** (RFC 3830 §4.2.7): group 5 (1536-bit),
   group 1 (768-bit) and group 2 (1024-bit), via the new `modp` module and
   `ModpInitiator` / `ModpResponder`. Additive — X25519 remains the default on

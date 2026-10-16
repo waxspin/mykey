@@ -37,6 +37,9 @@ This page provides a navigational index of the public surface.
 | `MikeyMessage::new_dh_init_modp` | Build a DH-Init in an OAKLEY MODP group |
 | `MikeyMessage::new_dh_resp_modp` | Build a DH-Resp in an OAKLEY MODP group |
 | `MikeyMessage::dh_group` | Read the DH group a message signals |
+| `MikeyMessage::new_dhhmac_init` | Build a DHHMAC init message (RFC 4650, type 7) |
+| `MikeyMessage::new_dhhmac_resp` | Build a DHHMAC response (RFC 4650, type 8) |
+| `MikeyMessage::verify_dhhmac` | Verify a DHHMAC message's HMAC |
 | `MikeyMessage::new_psk_init` | Build a PSK-Init message (no verification requested) |
 | `MikeyMessage::new_psk_init_requiring_verification` | Build a PSK-Init that sets the V flag, for mutual authentication |
 | `MikeyMessage::new_psk_verification` | Build the responder's verification message (§6.9) |
@@ -75,8 +78,10 @@ the default.
 
 | Item | Description |
 |---|---|
-| `ModpInitiator` | MODP counterpart to `DhInitiator` |
+| `ModpInitiator` | MODP counterpart to `DhInitiator` (unauthenticated) |
 | `ModpResponder` | MODP counterpart to `DhResponder`; `for_offer` adopts the initiator's group |
+| `DhHmacInitiator` | RFC 4650 authenticated DH, initiator — forward secrecy + mutual auth, no PKI |
+| `DhHmacResponder` | RFC 4650 authenticated DH, responder; `for_offer` adopts the initiator's group |
 
 ---
 

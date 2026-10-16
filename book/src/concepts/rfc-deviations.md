@@ -14,6 +14,7 @@ mykey for interoperability with another MIKEY stack, read this page first.
 | "Last payload" value (§6.1) | Compliant — fixed; was 255 where the RFC assigns 0 |
 | TGK construction | **Deviates for X25519 only** — PRF-derived per RFC 7748 §6.1; MODP groups use the raw DH result as the RFC requires |
 | DH method (§3.3) | **Partial** — OAKLEY groups 1/2/5 implemented, X25519 still the default; no SIGN payload, which §3.3 requires |
+| DHHMAC (RFC 4650) | Implemented — authenticated DH with no PKI; **deviates from RFC 4650 §4.2's KEMAC encodings**, which contradict RFC 3830 |
 | PSK method (§3.1) | Compliant — fixed; random TGK transported under AES-CM, MAC verified on receive |
 | Key data sub-payload (§6.13) | Compliant — fixed |
 | Verification message (§6.9) | Compliant — fixed; opt-in via the V flag |
@@ -217,6 +218,62 @@ DT") is the only method-level signal. The capability discovery of §5.1.1 covers
 SRTP *policy parameters*, not the keying method. Supporting several methods
 therefore means a responder accepting several data types by explicit
 configuration — never an automatic downgrade, which would itself be an attack.
+
+## DHHMAC (RFC 4650) and two defects in its text
+
+RFC 4650 adds HMAC-authenticated Diffie-Hellman: the DH half-keys are
+authenticated with an HMAC keyed from a pre-shared secret instead of a
+signature, which gives forward secrecy and mutual authentication with no PKI.
+It is standards track, reuses RFC 3830's PRF and DH groups, and is registered
+as data types 7 and 8. mykey implements it via `DhHmacInitiator` /
+`DhHmacResponder`.
+
+Two statements in RFC 4650 §4.2 contradict RFC 3830 §6.2, which normatively
+defines the KEMAC field encodings. **mykey follows RFC 3830.**
+
+| Field | RFC 3830 §6.2 | RFC 4650 §4.2 |
+|---|---|---|
+| `Encr alg` NULL | 0 | "set to 2 (NULL)" |
+| `MAC alg` NULL | 0 | 1 |
+| `MAC alg` HMAC-SHA-1-160 | 1 | 0 |
+
+The `Encr alg` claim is self-contradictory: value 2 is AES-KW-128 in Table
+6.2.a, and the same RFC 4650 paragraph says "The AES key wrap method SHALL not
+be applied for DHHMAC".
+
+The `MAC alg` swap is **security-relevant**. A peer following RFC 4650 literally
+sends `MAC alg = 0` meaning "HMAC-SHA-1 present"; a reader following RFC 3830
+sees NULL — no MAC — and would skip verification. That is
+GHSA-xq78-wvcv-hqvj reintroduced through a typo. mykey therefore does **not**
+accept `MAC alg = 0` as a MAC: it is NULL, and NULL is refused. Against a
+literal-RFC-4650 peer the exchange fails loudly rather than silently
+unauthenticated, which is the correct trade.
+
+Implementations agree with RFC 3830 rather than RFC 4650:
+
+| Implementation | DHHMAC | `Encr` NULL | `MAC` NULL | HMAC-SHA-1-160 |
+|---|---|---|---|---|
+| libmikey (minisip) | performs it | 0 | 0 | 1 |
+| Wireshark | dissects it | 0 | 0 | 1 |
+| GStreamer | not implemented | 0 | 0 | 1 |
+
+RFC 4650 also cites "[RFC 3830] sections 4.1.3 and 4.1.5" for the `auth_key`
+derivation; RFC 3830 has no §4.1.5. The relevant section is §4.1.4, and
+libmikey confirms it — `KeyAgreementDHHMAC` extends `KeyAgreementPSK` and
+derives the key as `0x2D22AC75 || 0xFF || csb_id || RAND` over the pre-shared
+secret, which is exactly mykey's `derive_auth_key`.
+
+None of this is covered by the 15 errata filed against RFC 4650, all of which
+are editorial.
+
+### Payload order
+
+RFC 4650 Figure 1 gives `HDR, T, RAND, [IDi], IDr, {SP}, DHi, KEMAC`; libmikey
+emits `HDR, T, {SP}, RAND, DH, KEMAC` and omits the ID payloads entirely,
+despite the RFC saying the initiator "SHALL always include the recipient's
+identity". Order does not affect interoperability — payloads are chained by
+`next_payload`, so any order parses, and each side computes the MAC over its own
+serialized bytes. mykey follows the RFC's order and does not send ID payloads.
 
 ## Pre-shared key mode — fixed
 

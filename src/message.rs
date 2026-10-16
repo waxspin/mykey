@@ -830,6 +830,202 @@ impl MikeyMessage {
         srtp::derive_srtp_keys(&tgk, rand, 0, self.header.csc_id, suite)
     }
 
+    /// Build a DHHMAC initiator message (RFC 4650, data type 7).
+    ///
+    /// ```text
+    /// I_MESSAGE = HDR, T, RAND, {SP}, DHi, KEMAC
+    /// ```
+    ///
+    /// The KEMAC carries only the HMAC: `Encr alg` NULL with an empty
+    /// `Encr data`, and the MAC computed over the entire message with the MAC
+    /// field zero-width, keyed from the pre-shared secret per RFC 3830 §4.1.4.
+    ///
+    /// # Note on RFC 4650 §4.2
+    ///
+    /// That section states `Encr alg` should be "2 (NULL)" and gives a MAC alg
+    /// table with HMAC-SHA-1 = 0 and NULL = 1. Both disagree with RFC 3830
+    /// §6.2, which normatively defines the KEMAC field encodings as NULL = 0
+    /// for `Encr alg`, and NULL = 0 / HMAC-SHA-1-160 = 1 for `MAC alg`. mykey
+    /// follows RFC 3830, as libmikey and Wireshark both do. See the
+    /// "Deviations from RFC 3830" chapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `group` is not a MODP group or `dh_public` is the
+    /// wrong width for it.
+    pub fn new_dhhmac_init(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        group: DhGroup,
+        dh_public: &[u8],
+        psk: &[u8],
+        sp: Option<SpPayload>,
+    ) -> Result<Self> {
+        check_modp_value(group, dh_public)?;
+        Self::build_dhhmac(
+            DataType::DhHmacInit,
+            csc_id,
+            Some(ssrc),
+            rand_bytes,
+            group,
+            dh_public,
+            psk,
+            sp,
+        )
+    }
+
+    /// Build a DHHMAC responder message (RFC 4650, data type 8).
+    ///
+    /// ```text
+    /// R_MESSAGE = HDR, T, DHr, KEMAC
+    /// ```
+    ///
+    /// The timestamp and RAND are taken from the initiator's message — §5.2
+    /// has the responder reuse the initiator's timestamp, and the RAND is part
+    /// of the `auth_key` label so both sides must agree on it.
+    pub fn new_dhhmac_resp(
+        init: &MikeyMessage,
+        group: DhGroup,
+        dh_public: &[u8],
+        psk: &[u8],
+    ) -> Result<Self> {
+        check_modp_value(group, dh_public)?;
+        let rand = init
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?
+            .to_vec();
+        Self::build_dhhmac(
+            DataType::DhHmacResp,
+            init.header.csc_id,
+            None,
+            &rand,
+            group,
+            dh_public,
+            psk,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_dhhmac(
+        data_type: DataType,
+        csc_id: u32,
+        ssrc: Option<u32>,
+        rand_bytes: &[u8],
+        group: DhGroup,
+        dh_public: &[u8],
+        psk: &[u8],
+        sp: Option<SpPayload>,
+    ) -> Result<Self> {
+        let cs_id_map = match ssrc {
+            Some(ssrc) => vec![SrtpId {
+                policy_no: 0,
+                ssrc,
+                roc: 0,
+            }],
+            None => vec![],
+        };
+
+        let header = CommonHeader {
+            version: 1,
+            data_type,
+            next_payload: PayloadType::T as u8,
+            v_flag: false,
+            prf_func: PrfFunc::MikeyPrfHmacSha1,
+            csc_id,
+            cs_count: cs_id_map.len() as u8,
+            cs_id_map_type: 0,
+            cs_id_map,
+        };
+
+        let timestamp = TimestampPayload {
+            next_payload: PayloadType::Rand as u8,
+            ts_type: TimestampType::Counter,
+            ts_value: csc_id.to_be_bytes().to_vec(),
+        };
+
+        let rand = RandPayload {
+            next_payload: if sp.is_some() {
+                PayloadType::Sp as u8
+            } else {
+                PayloadType::Dh as u8
+            },
+            rand: rand_bytes.to_vec(),
+        };
+
+        let dh = DhPayload {
+            next_payload: PayloadType::Kemac as u8,
+            dh_group: group,
+            dh_value: dh_public.to_vec(),
+            kv_type: 0,
+            kv_data: vec![],
+        };
+
+        // §4.2: KEMAC is last, carries no encrypted data, and holds the HMAC.
+        // Encr alg NULL = 0 and MAC alg HMAC-SHA-1-160 = 1 per RFC 3830 §6.2.
+        let kemac = KemacPayload {
+            next_payload: PayloadType::Last as u8,
+            enc_alg: EncAlg::Null,
+            mac_alg: MacAlg::HmacSha1160,
+            enc_data: vec![],
+            mac: vec![],
+        };
+
+        let mut payloads = vec![Payload::Timestamp(timestamp), Payload::Rand(rand)];
+        if let Some(mut sp) = sp {
+            sp.next_payload = PayloadType::Dh as u8;
+            payloads.push(Payload::Sp(sp));
+        }
+        payloads.push(Payload::Dh(dh));
+        payloads.push(Payload::Kemac(kemac));
+
+        // §5.2: serialize with the MAC field empty, HMAC the whole thing, then
+        // fill the field in.
+        let mut raw = Self::serialize(&header, &payloads);
+        let mac_offset = raw.len();
+
+        let auth_key = crypto::derive_auth_key(psk, csc_id, rand_bytes, PSK_AUTH_KEY_LEN)?;
+        let mac = crypto::compute_mac(&auth_key, &raw)?;
+        raw.extend_from_slice(&mac);
+
+        if let Some(Payload::Kemac(k)) = payloads.last_mut() {
+            k.mac = mac;
+        }
+
+        Ok(Self {
+            header,
+            payloads,
+            raw,
+            mac_offset: Some(mac_offset),
+        })
+    }
+
+    /// Verify a DHHMAC message's HMAC against the pre-shared secret.
+    ///
+    /// The `auth_key` label needs the RAND, which for a responder message is
+    /// the initiator's — pass it in `rand` rather than reading it from `self`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MikeyError::InvalidMac`] if the HMAC is wrong, absent, or the
+    /// payload declares `MacAlg::Null`. A NULL MAC is refused rather than
+    /// treated as "no check required".
+    pub fn verify_dhhmac(&self, psk: &[u8], rand: &[u8]) -> Result<()> {
+        let kemac = self.kemac().ok_or(MikeyError::MissingPayload("KEMAC"))?;
+
+        if kemac.mac_alg == MacAlg::Null || kemac.mac.is_empty() {
+            return Err(MikeyError::InvalidMac);
+        }
+        let mac_offset = self.mac_offset.ok_or(MikeyError::InvalidMac)?;
+        if mac_offset > self.raw.len() {
+            return Err(MikeyError::InvalidMac);
+        }
+
+        let auth_key = crypto::derive_auth_key(psk, self.header.csc_id, rand, PSK_AUTH_KEY_LEN)?;
+        crypto::verify_mac(&auth_key, &self.raw[..mac_offset], &kemac.mac)
+    }
+
     /// Whether the initiator requested a verification message in reply.
     ///
     /// Signalled by the V flag in the common header (RFC 3830 §3.1, §6.1).
@@ -1330,6 +1526,214 @@ impl DhResponder {
 impl Default for DhResponder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// HMAC-authenticated Diffie-Hellman, initiator side (RFC 4650).
+///
+/// This is the mode that makes the OAKLEY groups useful. Plain
+/// [`ModpInitiator`] is unauthenticated — RFC 3830 §3.3 expects a SIGN payload
+/// that mykey does not implement — whereas DHHMAC authenticates the exchange
+/// with an HMAC keyed from a pre-shared secret, giving **forward secrecy and
+/// mutual authentication with no PKI**.
+///
+/// Both sides need the same pre-shared secret. Unlike PSK mode, that secret
+/// never encrypts the session key: it only authenticates the DH half-keys, so
+/// compromising it later does not expose recorded sessions.
+pub struct DhHmacInitiator {
+    keypair: Option<ModpKeyPair>,
+    group: DhGroup,
+    psk: Vec<u8>,
+    rand_bytes: Vec<u8>,
+    csc_id: u32,
+    ssrc: u32,
+}
+
+impl DhHmacInitiator {
+    /// Create an initiator with a fresh ephemeral key pair in `group`.
+    pub fn new(csc_id: u32, ssrc: u32, group: DhGroup, psk: &[u8]) -> Result<Self> {
+        let keypair = ModpKeyPair::generate(group)?;
+        let mut rand_bytes = vec![0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut rand_bytes);
+
+        Ok(Self {
+            keypair: Some(keypair),
+            group,
+            psk: psk.to_vec(),
+            rand_bytes,
+            csc_id,
+            ssrc,
+        })
+    }
+
+    /// The group this exchange uses.
+    pub fn group(&self) -> DhGroup {
+        self.group
+    }
+
+    /// Build the authenticated init message.
+    pub fn init_message(&self) -> Result<MikeyMessage> {
+        self.build(None)
+    }
+
+    /// Build the authenticated init message with a security policy.
+    pub fn init_message_with_sp(&self, sp: SpPayload) -> Result<MikeyMessage> {
+        self.build(Some(sp))
+    }
+
+    fn build(&self, sp: Option<SpPayload>) -> Result<MikeyMessage> {
+        let public = self
+            .keypair
+            .as_ref()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
+            .public_bytes();
+        MikeyMessage::new_dhhmac_init(
+            self.csc_id,
+            self.ssrc,
+            &self.rand_bytes,
+            self.group,
+            &public,
+            &self.psk,
+            sp,
+        )
+    }
+
+    /// Verify the responder's message and derive SRTP keys.
+    ///
+    /// The HMAC is checked **before** the DH computation, so an unauthenticated
+    /// response yields no key material.
+    ///
+    /// # Errors
+    ///
+    /// [`MikeyError::InvalidMac`] if the response does not authenticate,
+    /// [`MikeyError::InvalidDhGroup`] if it answers in a different group, and
+    /// [`MikeyError::InvalidDhValue`] if its public value fails validation.
+    pub fn complete(
+        mut self,
+        resp: &MikeyMessage,
+        suite: SrtpCryptoSuite,
+    ) -> Result<SrtpKeyMaterial> {
+        // Authenticate first. The RAND in the label is ours, not the
+        // responder's echo of it.
+        resp.verify_dhhmac(&self.psk, &self.rand_bytes)?;
+
+        let peer_group = resp.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        if peer_group != self.group {
+            return Err(MikeyError::InvalidDhGroup);
+        }
+
+        let peer_pub = resp
+            .dh_public()
+            .ok_or(MikeyError::MissingPayload("DH"))?
+            .to_vec();
+
+        let keypair = self
+            .keypair
+            .take()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
+
+        // RFC 4650 §3: "Both parties then calculate the TGK as g^(xi * xr)" —
+        // raw, as in §3.3. No PRF wrapping; see the deviations chapter.
+        let tgk = keypair.diffie_hellman(&peer_pub)?;
+
+        srtp::derive_srtp_keys(&tgk, &self.rand_bytes, 0, self.csc_id, suite)
+    }
+}
+
+/// HMAC-authenticated Diffie-Hellman, responder side (RFC 4650).
+///
+/// See [`DhHmacInitiator`] for what this mode provides.
+pub struct DhHmacResponder {
+    keypair: Option<ModpKeyPair>,
+    group: DhGroup,
+    psk: Vec<u8>,
+}
+
+impl DhHmacResponder {
+    /// Create a responder with a fresh ephemeral key pair in `group`.
+    pub fn new(group: DhGroup, psk: &[u8]) -> Result<Self> {
+        Ok(Self {
+            keypair: Some(ModpKeyPair::generate(group)?),
+            group,
+            psk: psk.to_vec(),
+        })
+    }
+
+    /// Create a responder in whichever group the initiator offered.
+    ///
+    /// This does **not** authenticate the offer — call
+    /// [`resp_message`](DhHmacResponder::resp_message) or
+    /// [`complete`](DhHmacResponder::complete), which verify the initiator's
+    /// HMAC. An attacker can therefore cause a wasted key generation, but
+    /// nothing more.
+    pub fn for_offer(init: &MikeyMessage, psk: &[u8]) -> Result<Self> {
+        let group = init.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        Self::new(group, psk)
+    }
+
+    /// The group this exchange uses.
+    pub fn group(&self) -> DhGroup {
+        self.group
+    }
+
+    /// Verify the initiator's message and build the authenticated response.
+    ///
+    /// # Errors
+    ///
+    /// [`MikeyError::InvalidMac`] if the initiator's message does not
+    /// authenticate, and [`MikeyError::InvalidDhGroup`] on a group mismatch.
+    pub fn resp_message(&self, init: &MikeyMessage) -> Result<MikeyMessage> {
+        let rand = init
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?
+            .to_vec();
+        init.verify_dhhmac(&self.psk, &rand)?;
+
+        let peer_group = init.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        if peer_group != self.group {
+            return Err(MikeyError::InvalidDhGroup);
+        }
+
+        let public = self
+            .keypair
+            .as_ref()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
+            .public_bytes();
+        MikeyMessage::new_dhhmac_resp(init, self.group, &public, &self.psk)
+    }
+
+    /// Verify the initiator's message and derive SRTP keys.
+    pub fn complete(
+        mut self,
+        init: &MikeyMessage,
+        suite: SrtpCryptoSuite,
+    ) -> Result<SrtpKeyMaterial> {
+        let rand = init
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?
+            .to_vec();
+
+        // Authenticate before touching the DH value.
+        init.verify_dhhmac(&self.psk, &rand)?;
+
+        let peer_group = init.dh_group().ok_or(MikeyError::MissingPayload("DH"))?;
+        if peer_group != self.group {
+            return Err(MikeyError::InvalidDhGroup);
+        }
+
+        let peer_pub = init
+            .dh_public()
+            .ok_or(MikeyError::MissingPayload("DH"))?
+            .to_vec();
+
+        let keypair = self
+            .keypair
+            .take()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?;
+
+        let tgk = keypair.diffie_hellman(&peer_pub)?;
+
+        srtp::derive_srtp_keys(&tgk, &rand, 0, init.header.csc_id, suite)
     }
 }
 
@@ -1862,6 +2266,179 @@ mod tests {
         m.push(rand_len);
         m.extend_from_slice(&vec![0xAA; rand_len as usize]);
         m
+    }
+
+    // ── DHHMAC (RFC 4650) ───────────────────────────────────────────────────
+
+    const DHHMAC_PSK: &[u8] = b"a-dhhmac-pre-shared-secret-32b!!";
+
+    #[test]
+    fn test_dhhmac_full_exchange_agrees() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        for group in [DhGroup::Oakley1, DhGroup::Oakley2, DhGroup::Oakley5] {
+            let initiator = DhHmacInitiator::new(0xFEED, 0xBEEF, group, DHHMAC_PSK).unwrap();
+            let init_msg = initiator.init_message().unwrap();
+
+            // Responder sees only bytes.
+            let parsed_init = MikeyMessage::from_bytes(init_msg.to_bytes()).unwrap();
+            assert_eq!(parsed_init.header.data_type, DataType::DhHmacInit);
+
+            let responder = DhHmacResponder::for_offer(&parsed_init, DHHMAC_PSK).unwrap();
+            let resp_msg = responder.resp_message(&parsed_init).unwrap();
+            assert_eq!(resp_msg.header.data_type, DataType::DhHmacResp);
+
+            let resp_keys = responder.complete(&parsed_init, suite).unwrap();
+            let parsed_resp = MikeyMessage::from_bytes(resp_msg.to_bytes()).unwrap();
+            let init_keys = initiator.complete(&parsed_resp, suite).unwrap();
+
+            assert_eq!(init_keys.master_key, resp_keys.master_key, "{group:?}");
+            assert_eq!(init_keys.master_salt, resp_keys.master_salt, "{group:?}");
+        }
+    }
+
+    /// The KEMAC encodings follow RFC 3830 §6.2, not RFC 4650 §4.2's table.
+    /// libmikey and Wireshark both do the same; RFC 4650's values are an
+    /// unreported defect, and its MAC alg swap would mean reading a peer's
+    /// "HMAC present" as "no MAC".
+    #[test]
+    fn test_dhhmac_kemac_uses_rfc3830_encodings() {
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let kemac = init.kemac().unwrap();
+
+        assert_eq!(kemac.enc_alg, EncAlg::Null);
+        assert_eq!(kemac.enc_alg as u8, 0, "RFC 3830: NULL encryption is 0");
+        assert_eq!(kemac.mac_alg, MacAlg::HmacSha1160);
+        assert_eq!(kemac.mac_alg as u8, 1, "RFC 3830: HMAC-SHA-1-160 is 1");
+        assert!(kemac.enc_data.is_empty(), "§4.2: Encr data is empty");
+        assert_eq!(kemac.mac.len(), 20, "HMAC-SHA-1 is 160 bits");
+
+        // §4.2: KEMAC is the last payload.
+        assert_eq!(kemac.next_payload, PayloadType::Last as u8);
+    }
+
+    #[test]
+    fn test_dhhmac_data_types_are_7_and_8() {
+        assert_eq!(DataType::DhHmacInit as u8, 7);
+        assert_eq!(DataType::DhHmacResp as u8, 8);
+        assert_eq!(DataType::from_u8(7), Some(DataType::DhHmacInit));
+        assert_eq!(DataType::from_u8(8), Some(DataType::DhHmacResp));
+    }
+
+    #[test]
+    fn test_dhhmac_wrong_psk_rejected() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let parsed = MikeyMessage::from_bytes(init.to_bytes()).unwrap();
+
+        let responder =
+            DhHmacResponder::new(DhGroup::Oakley5, b"the-wrong-pre-shared-secret!!!!!").unwrap();
+        assert!(matches!(
+            responder.resp_message(&parsed),
+            Err(MikeyError::InvalidMac)
+        ));
+
+        let responder =
+            DhHmacResponder::new(DhGroup::Oakley5, b"the-wrong-pre-shared-secret!!!!!").unwrap();
+        assert!(matches!(
+            responder.complete(&parsed, suite),
+            Err(MikeyError::InvalidMac)
+        ));
+    }
+
+    /// Tampering anywhere in the message must be caught — the HMAC covers the
+    /// whole thing, including the DH half-key, which is the point of DHHMAC.
+    #[test]
+    fn test_dhhmac_tampered_dh_value_rejected() {
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let mut bytes = init.to_bytes().to_vec();
+
+        // Flip a bit inside the DH value. Layout: header(10) + cs_map(9) +
+        // T(6) + RAND(18) = 43, then DH next_payload/group, so 45 is in the
+        // DH value itself.
+        bytes[45] ^= 0x01;
+
+        let parsed = MikeyMessage::from_bytes(&bytes).unwrap();
+        let rand = parsed.rand_bytes().unwrap().to_vec();
+        assert!(matches!(
+            parsed.verify_dhhmac(DHHMAC_PSK, &rand),
+            Err(MikeyError::InvalidMac)
+        ));
+    }
+
+    #[test]
+    fn test_dhhmac_null_mac_alg_refused() {
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let mut bytes = init.to_bytes().to_vec();
+
+        // The KEMAC's mac_alg byte sits after next_payload, enc_alg and the
+        // 2-byte length, with enc_data empty.
+        let kemac_start = bytes.len() - 20 - 5;
+        assert_eq!(bytes[kemac_start + 1], EncAlg::Null as u8);
+        bytes[kemac_start + 4] = MacAlg::Null as u8;
+
+        if let Ok(parsed) = MikeyMessage::from_bytes(&bytes) {
+            let rand = parsed.rand_bytes().unwrap().to_vec();
+            assert!(matches!(
+                parsed.verify_dhhmac(DHHMAC_PSK, &rand),
+                Err(MikeyError::InvalidMac)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_dhhmac_group_mismatch_rejected() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley1, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let responder = DhHmacResponder::new(DhGroup::Oakley5, DHHMAC_PSK).unwrap();
+        assert!(matches!(
+            responder.complete(&init, suite),
+            Err(MikeyError::InvalidDhGroup)
+        ));
+    }
+
+    #[test]
+    fn test_dhhmac_with_security_policy() {
+        let sp = crate::policy::SrtpPolicy::aes_128_default().to_sp_payload(0);
+        let initiator = DhHmacInitiator::new(0xAAAA, 0xBBBB, DhGroup::Oakley5, DHHMAC_PSK).unwrap();
+        let msg = initiator.init_message_with_sp(sp).unwrap();
+        let parsed = MikeyMessage::from_bytes(msg.to_bytes()).unwrap();
+
+        assert!(parsed.security_policy().is_some());
+        // The HMAC must still verify with the SP spliced in.
+        let rand = parsed.rand_bytes().unwrap().to_vec();
+        parsed.verify_dhhmac(DHHMAC_PSK, &rand).unwrap();
+    }
+
+    /// DHHMAC gives forward secrecy that PSK mode does not: the pre-shared
+    /// secret only authenticates, so two exchanges with the same secret must
+    /// still produce unrelated session keys.
+    #[test]
+    fn test_dhhmac_has_forward_secrecy() {
+        let suite = SrtpCryptoSuite::AES_128_CM_SHA1_80;
+        let mut keys = Vec::new();
+        for _ in 0..2 {
+            let initiator = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK).unwrap();
+            let init_msg = initiator.init_message().unwrap();
+            let responder = DhHmacResponder::new(DhGroup::Oakley5, DHHMAC_PSK).unwrap();
+            let resp_msg = responder.resp_message(&init_msg).unwrap();
+            keys.push(initiator.complete(&resp_msg, suite).unwrap().master_key);
+        }
+        assert_ne!(keys[0], keys[1], "same PSK must not fix the session key");
     }
 
     // ── OAKLEY MODP exchange (RFC 3830 §4.2.7) ──────────────────────────────
