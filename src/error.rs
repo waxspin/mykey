@@ -34,9 +34,13 @@ pub enum MikeyError {
     #[error("invalid MAC: verification failed")]
     InvalidMac,
 
-    /// The DH value bytes are not a valid X25519 public key.
+    /// The DH value bytes are not a valid public key for the group in use.
     #[error("invalid DH value")]
     InvalidDhValue,
+
+    /// The DH group is unknown, unsupported, or does not match the one offered.
+    #[error("invalid or mismatched DH group")]
+    InvalidDhGroup,
 
     /// A payload required by the operation was absent from the message.
     #[error("missing required payload: {0}")]

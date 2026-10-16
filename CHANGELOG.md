@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OAKLEY MODP Diffie-Hellman groups** (RFC 3830 §4.2.7): group 5 (1536-bit),
+  group 1 (768-bit) and group 2 (1024-bit), via the new `modp` module and
+  `ModpInitiator` / `ModpResponder`. Additive — X25519 remains the default on
+  private-use DH-Group 255, and the existing `DhInitiator` / `DhResponder` and
+  `DhKeyPair` are untouched ([#24]).
+
+  Peer values get NIST SP 800-56A full public key validation for safe-prime
+  groups: `1 < y < p-1` plus `y^q mod p == 1` for order-`q` subgroup membership.
+  The ephemeral exponent is 256 bits, above the 180-240 RFC 3526 §8 recommends
+  for the strongest group offered. Arithmetic is `crypto-bigint`'s constant-time
+  `BoxedMontyForm::pow`.
+
+  Note that in these groups the TGK is the **raw** DH result, as §3.3 requires —
+  the PRF wrapping mykey applies for X25519 is an X25519-only deviation and
+  applying it here would break interoperability.
+
+  DH mode remains **unauthenticated**: §3.3 expects a SIGN payload, which mykey
+  does not implement, so a conformant peer will still reject these messages.
+  OAKLEY is the groundwork for RFC 4650 (MIKEY-DHHMAC), which authenticates the
+  exchange from a pre-shared key instead of signatures.
+
+- `MikeyMessage::new_dh_init_modp`, `new_dh_init_modp_with_sp` and
+  `new_dh_resp_modp` for building MODP DH messages, plus
+  `MikeyMessage::dh_group` to read the group a message signals.
+- `MikeyError::InvalidDhGroup`, returned when a peer answers in a different
+  group than was offered.
+- `crypto-bigint` dependency, for constant-time modular exponentiation.
+
+
 ## [2.0.0] - 2026-10-09
 
 ### Added
