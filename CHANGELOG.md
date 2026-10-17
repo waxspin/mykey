@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-17
+
 ### Added
 
 - **HMAC-authenticated Diffie-Hellman (RFC 4650, MIKEY-DHHMAC)** via
@@ -182,7 +184,8 @@ Initial 1.0 release.
 
 <!-- Version links. The marker below is where cargo-release inserts the link for
      each newly released version; see pre-release-replacements in Cargo.toml. -->
-[Unreleased]: https://github.com/waxspin/mykey/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/waxspin/mykey/compare/v2.1.0...HEAD
 <!-- next-compare -->
+[2.1.0]: https://github.com/waxspin/mykey/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/waxspin/mykey/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/waxspin/mykey/releases/tag/v1.0.0
