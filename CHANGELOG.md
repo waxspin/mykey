@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Replay protection** (RFC 3830 §5.4) as an opt-in: `replay::ReplayCache`
+  plus `MikeyMessage::verify_fresh`. Additive — no existing signature changes
+  ([#24]).
+
+  mykey deliberately does not read the clock: it cannot know the accuracy of
+  the host's time source, so the caller supplies a `SystemTime` and the window.
+  §5.4 puts the allowable skew under "local policy", and §4.2.8 asks for the NTP
+  *format* rather than the NTP *protocol* — so a PTP-locked host can supply the
+  time, provided it derives a wall clock and not only a media clock.
+
+  `verify_fresh` returns `Freshness::Verified` only when the message carried an
+  NTP-format timestamp inside the window. **mykey still emits COUNTER**, so a
+  mykey-to-mykey exchange returns `Freshness::ReplayOnly` — replays are rejected
+  while the cache holds the entry, but freshness is not established. NTP-format
+  emission is a breaking change and is deferred.
+
+  Call it *after* verifying the MAC: §5.4 scopes the cache to successfully
+  authenticated messages, and caching unauthenticated ones would let an
+  attacker poison it against a legitimate exchange.
+
+  Under overload the cache rejects rather than evicting, as §5.4 prescribes;
+  evicting would let a flood of unique RANDs re-enable replays. Memory is
+  bounded by arrival rate × window, capped by `DEFAULT_MAX_ENTRIES`.
+
+  Note the inherent limit: once an entry expires, that message is admissible
+  again. §5.4 frames this as "a tradeoff between the size of the replay cache
+  and the required synchronization".
+
+- `replay::ntp_to_system_time` and `replay::system_time_to_ntp` for the §4.2.8
+  64-bit NTP timestamp format.
+- `MikeyError::ReplayDetected`, `StaleTimestamp` and `ReplayCacheFull`.
+
+
 ## [2.1.0] - 2026-10-17
 
 ### Added
