@@ -2,6 +2,7 @@ use crate::crypto::{self, DhKeyPair};
 use crate::error::{MikeyError, Result};
 use crate::modp::ModpKeyPair;
 use crate::payload::*;
+use crate::replay::{Freshness, ReplayCache};
 use crate::srtp::{self, SrtpCryptoSuite, SrtpKeyMaterial};
 
 /// Key exchange method selection
@@ -1200,6 +1201,61 @@ impl MikeyMessage {
         out
     }
 
+    /// Check this message against a replay cache and a caller-supplied clock
+    /// (RFC 3830 §5.4).
+    ///
+    /// This is **separate from authentication** and complements it. Verify the
+    /// MAC first — via [`complete_psk`](MikeyMessage::complete_psk) or
+    /// [`verify_dhhmac`](MikeyMessage::verify_dhhmac) — since §5.4 says the
+    /// cache holds "messages that have been successfully authenticated". Caching
+    /// unauthenticated messages would let an attacker poison the cache against
+    /// a legitimate exchange.
+    ///
+    /// mykey does not read the clock itself: it cannot know the accuracy of the
+    /// host's time source. Pass a PTP-derived wall clock where one exists, or
+    /// `SystemTime::now()` otherwise. See the [`replay`](crate::replay) module
+    /// for choosing the window.
+    ///
+    /// # Returns
+    ///
+    /// [`Freshness::Verified`] when the message carried an NTP-format timestamp
+    /// that fell inside the window, or [`Freshness::ReplayOnly`] when it carried
+    /// a COUNTER, which is not a clock and so cannot establish freshness. mykey
+    /// still emits COUNTER, so a mykey-to-mykey exchange yields `ReplayOnly`
+    /// today. Match on it if your deployment genuinely requires freshness
+    /// rather than replay rejection alone.
+    ///
+    /// # Errors
+    ///
+    /// - [`MikeyError::ReplayDetected`] — already seen inside the window.
+    /// - [`MikeyError::StaleTimestamp`] — outside the window, in either
+    ///   direction; a peer's clock may legitimately run slightly ahead.
+    /// - [`MikeyError::ReplayCacheFull`] — at capacity, so freshness cannot be
+    ///   established. §5.4 prescribes rejecting under overload rather than
+    ///   evicting.
+    /// - [`MikeyError::MissingPayload`] — no RAND or T payload.
+    pub fn verify_fresh(
+        &self,
+        cache: &mut ReplayCache,
+        now: std::time::SystemTime,
+    ) -> Result<Freshness> {
+        let rand = self
+            .rand_bytes()
+            .ok_or(MikeyError::MissingPayload("RAND"))?
+            .to_vec();
+        let ts = self
+            .timestamp_payload()
+            .ok_or(MikeyError::MissingPayload("T"))?;
+
+        // Only the 64-bit NTP types carry a clock; COUNTER does not.
+        let ntp = match ts.ts_type {
+            TimestampType::NtpUtc | TimestampType::Ntp => Some(ts.ts_value.as_slice()),
+            TimestampType::Counter => None,
+        };
+
+        cache.admit(self.header.csc_id, &rand, ntp, now)
+    }
+
     /// Get the T payload from this message.
     pub fn timestamp_payload(&self) -> Option<&TimestampPayload> {
         self.payloads.iter().find_map(|p| match p {
@@ -2266,6 +2322,101 @@ mod tests {
         m.push(rand_len);
         m.extend_from_slice(&vec![0xAA; rand_len as usize]);
         m
+    }
+
+    // ── Replay protection (RFC 3830 §5.4) ───────────────────────────────────
+
+    #[test]
+    fn test_verify_fresh_rejects_a_replayed_psk_init() {
+        use crate::replay::{Freshness, ReplayCache};
+        use std::time::{Duration, SystemTime};
+
+        let psk = b"a-shared-secret-of-some-length!!";
+        let rand = [0x5Au8; 16];
+        let msg = MikeyMessage::new_psk_init(0x1234, 0xABCD, &rand, psk).unwrap();
+        let wire = msg.to_bytes().to_vec();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        let mut cache = ReplayCache::new(Duration::from_secs(30));
+
+        // First delivery: authenticate, then admit.
+        let first = MikeyMessage::from_bytes(&wire).unwrap();
+        first
+            .complete_psk(psk, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+            .unwrap();
+        assert_eq!(
+            first.verify_fresh(&mut cache, now).unwrap(),
+            // mykey still emits COUNTER, so freshness cannot be established —
+            // only replay. This becomes Verified once NTP emission lands.
+            Freshness::ReplayOnly
+        );
+
+        // Byte-identical redelivery still authenticates — which is exactly why
+        // replay protection is needed on top of the MAC.
+        let replayed = MikeyMessage::from_bytes(&wire).unwrap();
+        replayed
+            .complete_psk(psk, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+            .expect("a replay authenticates perfectly well");
+        assert!(matches!(
+            replayed.verify_fresh(&mut cache, now),
+            Err(MikeyError::ReplayDetected)
+        ));
+    }
+
+    #[test]
+    fn test_verify_fresh_admits_distinct_exchanges() {
+        use crate::replay::ReplayCache;
+        use std::time::{Duration, SystemTime};
+
+        let psk = b"a-shared-secret-of-some-length!!";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut cache = ReplayCache::new(Duration::from_secs(30));
+
+        for i in 0..4u8 {
+            let msg = MikeyMessage::new_psk_init(0x1000 + i as u32, 1, &[i; 16], psk).unwrap();
+            msg.verify_fresh(&mut cache, now).unwrap();
+        }
+        assert_eq!(cache.len(), 4);
+    }
+
+    #[test]
+    fn test_verify_fresh_works_for_dhhmac_too() {
+        use crate::replay::ReplayCache;
+        use std::time::{Duration, SystemTime};
+
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .init_message()
+            .unwrap();
+        let wire = init.to_bytes().to_vec();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut cache = ReplayCache::new(Duration::from_secs(30));
+
+        let first = MikeyMessage::from_bytes(&wire).unwrap();
+        let rand = first.rand_bytes().unwrap().to_vec();
+        first.verify_dhhmac(DHHMAC_PSK, &rand).unwrap();
+        first.verify_fresh(&mut cache, now).unwrap();
+
+        let again = MikeyMessage::from_bytes(&wire).unwrap();
+        assert!(matches!(
+            again.verify_fresh(&mut cache, now),
+            Err(MikeyError::ReplayDetected)
+        ));
+    }
+
+    /// A message with no RAND cannot be keyed for replay purposes.
+    #[test]
+    fn test_verify_fresh_requires_rand_and_timestamp() {
+        use crate::replay::ReplayCache;
+        use std::time::{Duration, SystemTime};
+
+        // A DH-Resp carries neither RAND nor T.
+        let resp = MikeyMessage::new_dh_resp(1, &[0x42u8; 32]).unwrap();
+        let mut cache = ReplayCache::new(Duration::from_secs(30));
+        assert!(matches!(
+            resp.verify_fresh(&mut cache, SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+            Err(MikeyError::MissingPayload(_))
+        ));
     }
 
     // ── DHHMAC (RFC 4650) ───────────────────────────────────────────────────

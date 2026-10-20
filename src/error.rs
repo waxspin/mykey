@@ -42,6 +42,21 @@ pub enum MikeyError {
     #[error("invalid or mismatched DH group")]
     InvalidDhGroup,
 
+    /// This message was already seen inside the replay window (RFC 3830 §5.4).
+    #[error("replayed message")]
+    ReplayDetected,
+
+    /// The message's timestamp falls outside the allowed clock skew.
+    #[error("stale or future-dated timestamp")]
+    StaleTimestamp,
+
+    /// The replay cache is at capacity, so freshness cannot be established.
+    ///
+    /// RFC 3830 §5.4 prescribes rejecting under overload rather than evicting,
+    /// since evicting would let a flood of unique messages re-enable replays.
+    #[error("replay cache full; rejecting until entries expire")]
+    ReplayCacheFull,
+
     /// A payload required by the operation was absent from the message.
     #[error("missing required payload: {0}")]
     MissingPayload(&'static str),

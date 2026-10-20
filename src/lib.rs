@@ -67,6 +67,8 @@ pub mod modp;
 pub mod payload;
 /// SRTP security policy builder and parser.
 pub mod policy;
+/// Replay protection for received messages (RFC 3830 §5.4).
+pub mod replay;
 /// SAP packet builder/parser and SDP `a=key-mgmt:mikey` helpers.
 pub mod sap;
 /// SRTP key material and crypto suite definitions.

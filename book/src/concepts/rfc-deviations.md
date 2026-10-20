@@ -19,7 +19,7 @@ mykey for interoperability with another MIKEY stack, read this page first.
 | Key data sub-payload (§6.13) | Compliant — fixed |
 | Verification message (§6.9) | Compliant — fixed; opt-in via the V flag |
 | Timestamps (§4.2.8, §6.6) | **Deviates** — emits COUNTER (the optional type) rather than a mandatory NTP type |
-| Replay protection (§5.4) | Not implemented — no record of seen timestamps or RAND values |
+| Replay protection (§5.4) | **Partial** — opt-in `ReplayCache` rejects replays; freshness needs an NTP-format timestamp, which is not yet emitted |
 | Public-key method (§3.2) | Not implemented |
 
 Interoperability work is planned: pre-shared key mode to §3.1 compliance, then
@@ -320,13 +320,71 @@ rather than silently accepting misaligned data. The variant was also misnamed
 
 ## Replay protection
 
-Not implemented. Nothing records the timestamps or RAND values already seen
-(§5.4), so a captured PSK-Init can be replayed and the receiver will accept it and
-derive the same keys.
+Available as an opt-in: [`ReplayCache`] plus `MikeyMessage::verify_fresh`.
+mykey holds no global state, so the cache is the caller's, and its lifetime and
+memory are too.
 
-This needs state, which mykey currently has none of — `from_bytes` is a pure
-function — so where the cache lives is an API design question rather than a
-missing call.
+**mykey does not read the clock.** It cannot know the accuracy of the host's
+time source, and guessing wrong is harmful either way — too tight and legitimate
+messages expire, too loose and a captured message stays replayable. The caller
+supplies a `SystemTime`, which §5.4 supports directly: the allowable skew is
+"set by the local policy".
+
+Note that §4.2.8 asks for the NTP *format* — a 64-bit count of seconds since
+1900, the encoding RTCP sender reports also use — not the NTP *protocol*. A
+PTP-locked host can populate it, provided it derives a wall clock and not only a
+media clock. Those are different things: PTP usually disciplines a media or
+hardware clock, and the system clock only follows it with additional
+configuration.
+
+| Time source | Realistic window |
+|---|---|
+| PTP-derived wall clock | sub-second |
+| NTP on a LAN | tens of seconds |
+| NTP over a WAN | minutes |
+| Unsynchronized, or an offline/file-based exchange | not available |
+
+That last row is not a hedge. A MIKEY message written to an SDP file and copied
+to the receiver later has no live clock relationship between the two ends, so no
+window is meaningful. Choosing a large one buys a false sense of protection
+rather than protection.
+
+### What it does and does not establish today
+
+`verify_fresh` returns `Freshness::Verified` only when the message carried an
+NTP-format timestamp inside the window. **mykey still emits COUNTER**, so a
+mykey-to-mykey exchange yields `Freshness::ReplayOnly`: replays are rejected
+while the cache retains the entry, but freshness is not established. The return
+value is deliberately not `()` so a caller that requires freshness can tell it
+did not get it.
+
+Two further limits worth stating plainly:
+
+- **The guarantee is bounded by the window.** Once an entry expires, the same
+  message is admissible again. That is inherent to a bounded cache — §5.4 frames
+  it as "a tradeoff between the size of the replay cache and the required
+  synchronization".
+- **Authenticate first.** §5.4 scopes the cache to "messages that have been
+  successfully authenticated", and caching unauthenticated messages would let an
+  attacker poison it against a legitimate exchange. `verify_fresh` does not
+  check the MAC; call it after `complete_psk` or `verify_dhhmac`.
+
+Under overload the cache rejects rather than evicting, per §5.4: "If the host
+loses track of the incoming requests (e.g., due to overload), it rejects all
+incoming requests until the clock skew interval has passed." Evicting would let
+a flood of unique RANDs push out genuine entries and re-enable replays.
+
+### Rejected alternatives
+
+- **Named PTP / NTP tolerance presets.** mykey cannot verify which protocol is
+  in use, so a "PTP mode" that does not confirm PTP is just a smaller number
+  with a misleading label — and it invites selecting it while unsynchronized.
+  The tolerance is a property of the deployment.
+- **Clock-free replay detection**, caching `(CSB_ID, RAND)` with no time source.
+  Entries could never be safely expired: either unbounded growth, or an LRU an
+  attacker can flush by flooding. This is exactly why §5.4 uses timestamps.
+
+[`ReplayCache`]: https://waxspin.github.io/mykey/doc/mykey/replay/struct.ReplayCache.html
 
 ## The "Last payload" terminator — fixed
 
