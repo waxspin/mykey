@@ -51,15 +51,15 @@ input-key length is a multiple of 32 bytes, where libmikey passes `inkeyLength %
 Full analysis, including what this means for interoperating with libmikey and
 how much it matters to libmikey itself, is in `book/src/concepts/interop.md`.
 
-## Not yet run: structural validation against Wireshark
+## The other half: structural validation against Wireshark
 
 libmikey is an oracle for key *derivation*. It says nothing about whether the
 bytes mykey puts on the wire parse correctly, because the harness never builds a
 message.
 
-`examples/interop_pcap.rs` is the start of a second, independent check for that:
-it writes ten representative messages — PSK init with and without the V flag,
-the verification message, X25519 and all three OAKLEY groups, and DHHMAC init and
+`examples/interop_pcap.rs` is the second, independent check for that: it writes
+ten representative messages — PSK init with and without the V flag, the
+verification message, X25519 and all three OAKLEY groups, and DHHMAC init and
 response — into a pcap as UDP to port 2269, which is where Wireshark's
 `packet-mikey.c` dissector registers.
 
@@ -68,9 +68,17 @@ cargo run --example interop_pcap -- /tmp/mykey-interop.pcap
 tshark -r /tmp/mykey-interop.pcap -V -d udp.port==2269,mikey
 ```
 
-The generator works and the pcap is well-formed, but **the dissection itself has
-not been run**, so nothing in this repository is yet validated against Wireshark.
-Doing so needs `tshark` installed and the output read for malformed-field
-warnings.
+Against Wireshark 4.2.2, nine of the ten frames dissect completely with no
+malformed packets and no expert infos. The tenth is the X25519 message on
+private-use DH-Group 255, which no third-party parser can read, because the DH
+payload carries no length field and the DH-value length is implied by the group.
+Both results are analysed in `book/src/concepts/interop.md`.
+
+To check for malformed fields specifically, rather than reading the whole tree:
+
+```sh
+tshark -r /tmp/mykey-interop.pcap -d udp.port==2269,mikey -Y '_ws.malformed'
+tshark -r /tmp/mykey-interop.pcap -d udp.port==2269,mikey -z expert -q
+```
 
 [libmikey]: https://github.com/csd/minisip/tree/master/libmikey

@@ -4,12 +4,100 @@ RFC 3830 ships no test vectors. Every claim that mykey computes the right bytes
 therefore rests either on reading the RFC or on agreeing with somebody else's
 independent implementation. This chapter records the second kind of evidence.
 
-## The reference implementation
+There are two claims to make good on, and they need different oracles. Whether
+the bytes on the wire are laid out as the RFC says is answered by an independent
+*parser*; whether the keys derived from them are right is answered by an
+independent *implementation*. Wireshark serves the first, libmikey the second.
+
+## Wire format: an independent parser
+
+Wireshark's [`packet-mikey.c`][dissector] is written from the RFC, knows the
+payload grammar and the §6 registries, handles DHHMAC (data types 7 and 8), and
+registers on UDP port 2269. It derives no keys, so it says nothing about the
+next section — but it reads back every field mykey writes.
+
+`examples/interop_pcap.rs` emits ten representative messages as a pcap for it:
+
+```sh
+cargo run --example interop_pcap -- /tmp/mykey-interop.pcap
+tshark -r /tmp/mykey-interop.pcap -V -d udp.port==2269,mikey
+```
+
+### Result
+
+Against Wireshark 4.2.2, **nine of the ten frames dissect completely**, with no
+malformed packets and no expert infos:
+
+| Frame | Message | Payloads | Dissected as |
+|---|---|---|---|
+| 1 | PSK init | HDR, T, RAND, KEMAC | `Pre-shared` |
+| 2 | PSK init, `V` flag set | HDR, T, RAND, KEMAC | `Pre-shared` |
+| 3 | PSK verification | HDR, T, V | `PSK ver msg` |
+| 4 | DH init, X25519 | HDR, T, RAND, DH | *see below* |
+| 5 | DH init, OAKLEY 5 | HDR, T, RAND, DH | `D-H init` |
+| 6 | DH init, OAKLEY 1 | HDR, T, RAND, DH | `D-H init` |
+| 7 | DH init, OAKLEY 2 | HDR, T, RAND, DH | `D-H init` |
+| 8 | DH init, OAKLEY 5 with policy | HDR, T, RAND, SP, DH | `D-H init` |
+| 9 | DHHMAC init | HDR, T, RAND, DH, KEMAC | `DHHMAC init` |
+| 10 | DHHMAC response | HDR, T, RAND, DH, KEMAC | `DHHMAC resp` |
+
+Values come back as written throughout: the `V` flag, PRF func MIKEY-1, the CSB
+ID, the SRTP-ID CS map with its SSRC and ROC, `Encr alg: AES-CM-128`, `Mac alg:
+HMAC-SHA-1-160`, and the step 0 `Next Payload: Last payload (0)` terminator
+closing every message. Frame 8's Security Policy payload decodes to all nine
+§6.10 SRTP parameters that mykey's `SrtpPolicy` defaults set — AES-CM, 16-byte
+session key, HMAC-SHA-1, 20-byte auth key, 14-byte salt, SRTP and SRTCP
+encryption on, SRTP authentication on, 10-byte tag.
+
+The DH-Group values are the part most worth having had checked, because the
+obvious encoding is the wrong one. RFC 3830 numbers the groups in an order
+unrelated to their OAKLEY names — **0 is OAKLEY 5, 1 is OAKLEY 1, 2 is OAKLEY
+2** — so an implementation that wrote the name as the value would put 5 on the
+wire for OAKLEY 5, and no round-trip test would notice, since it would read its
+own encoding back. Wireshark decodes frames 5, 6 and 7 as OAKLEY 5, OAKLEY 1 and
+OAKLEY 2 from wire values 0, 1 and 2.
+
+### Frame 4: a private-use group is unparseable by construction
+
+Frame 4 is the X25519 message, which mykey sends on DH-Group 255 — Reserved for
+Private Use, because RFC 3830 registers no elliptic-curve group. Wireshark
+dissects its HDR, T and RAND payloads, then stops inside the DH payload after
+emitting the `Next Payload` field. Nothing is flagged malformed, but the protocol
+column stays `UDP` instead of `UDP/MIKEY`.
+
+That is structural, not a defect on either side. The DH payload carries no length
+field for the DH value: the length is implied by the group. So the dissector
+recovers it from a hard-coded table.
+
+```c
+/* epan/dissectors/packet-mikey.c, dissect_payload_dh */
+switch (dh_group) {
+case DH_OAKLEY_5: dh_length = 1536/8; break;
+case DH_OAKLEY_1: dh_length =  768/8; break;
+case DH_OAKLEY_2: dh_length = 1024/8; break;
+default:
+        return 0;
+}
+```
+
+The payload walk reads a zero return as "protocol violation or invalid data, stop
+dissecting but accept the data retrieved so far", and returns before the line
+that appends `/MIKEY` to the protocol column — hence a frame that keeps a partial
+MIKEY tree while losing its column label.
+
+No third-party parser can do better. A private-use group number conveys no
+length, so the payload is parseable only by a peer that already knows what 255
+means. That is a known cost of mykey's default mode, accepted deliberately and
+recorded under [Deviations from RFC 3830](rfc-deviations.md); it is also part of
+why the OAKLEY groups exist alongside it. Every message mykey sends in a
+standards-track mode dissects.
+
+## Key derivation: an independent implementation
 
 [libmikey], part of the [minisip] softphone, is the only implementation found
-that actually *performs* DHHMAC — Wireshark dissects MIKEY but does not derive
-keys, and GStreamer's MIKEY support does not implement DHHMAC at all. That makes
-libmikey the natural oracle for the key-derivation path.
+that actually *performs* DHHMAC — Wireshark only parses it, and GStreamer's
+MIKEY support does not implement DHHMAC at all. That makes libmikey the natural
+oracle for the key-derivation path.
 
 libmikey's RFC 3830 §4.1.2 PRF needs almost nothing from the rest of the minisip
 tree: one typedef, two constants, and `hmac_sha1`, which is a bare OpenSSL
@@ -175,6 +263,7 @@ unsigned tail = inkeyLength % PRF_KEY_CHUNK_LENGTH;
 if( tail == 0 ) tail = PRF_KEY_CHUNK_LENGTH;
 ```
 
+[dissector]: https://gitlab.com/wireshark/wireshark/-/blob/wireshark-4.2.2/epan/dissectors/packet-mikey.c
 [libmikey]: https://github.com/csd/minisip/tree/master/libmikey
 [minisip]: https://github.com/csd/minisip
 [harness]: https://github.com/waxspin/mykey/tree/main/interop/libmikey

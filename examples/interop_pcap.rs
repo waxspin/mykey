@@ -14,6 +14,11 @@
 //!
 //! This validates the wire *format* only. MAC verification and key-agreement
 //! equivalence need a peer that performs the exchange, such as libmikey.
+//!
+//! Nine of the ten frames dissect completely against Wireshark 4.2.2. The tenth
+//! is the X25519 message, which no third-party parser can read because
+//! private-use DH-Group 255 conveys no DH-value length. Both results, and the
+//! fields checked, are recorded in `book/src/concepts/interop.md`.
 
 use std::io::Write;
 

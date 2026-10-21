@@ -33,6 +33,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every OAKLEY MODP secret and minisip's default TGK are multiples of 32 bytes.
   No code changes — this is test and documentation only.
 
+- **Wire-format validation against an independent parser.** Conformant byte
+  layout is a separate claim from correct key derivation, so it gets a separate
+  oracle: `examples/interop_pcap.rs` writes ten representative messages to a
+  pcap on UDP 2269 for Wireshark's `packet-mikey.c` to read back.
+
+  **Nine of the ten dissect completely** against Wireshark 4.2.2, with no
+  malformed packets and no expert infos: PSK init with and without the `V` flag,
+  PSK verification, DH init on OAKLEY 5/1/2, DH init carrying a Security Policy,
+  and DHHMAC init and response. Field values are read back as written, including
+  the §6.10 SRTP policy parameters, the `Last payload` terminator, and the
+  DH-Group numbering — where RFC 3830's order is unrelated to the OAKLEY names
+  (0 is OAKLEY 5), so a round-trip test could not have caught an error.
+
+  The tenth frame is the X25519 message on private-use DH-Group 255, which
+  Wireshark stops partway through. That is structural: the DH payload has no
+  length field, so the DH-value length is implied by the group, and no
+  third-party parser can read a private-use group. Both results are recorded in
+  the Interoperability chapter.
+
 ## [2.2.0] - 2026-10-20
 
 ### Added
