@@ -10,6 +10,7 @@
 - [Key Exchange Modes](concepts/key-exchange-modes.md)
 - [Wire Format](concepts/wire-format.md)
 - [Deviations from RFC 3830](concepts/rfc-deviations.md)
+- [Interoperability](concepts/interop.md)
 
 # Key Exchange
 
