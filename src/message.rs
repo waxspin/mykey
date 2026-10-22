@@ -447,7 +447,15 @@ impl MikeyMessage {
         rand_bytes: &[u8],
         dh_public: &[u8; 32],
     ) -> Result<Self> {
-        Self::build_dh_init(csc_id, ssrc, rand_bytes, DhGroup::X25519, dh_public, None)
+        Self::build_dh_init(
+            csc_id,
+            ssrc,
+            rand_bytes,
+            DhGroup::X25519,
+            dh_public,
+            None,
+            Timestamp::now(),
+        )
     }
 
     /// Build a DH initiator message in an OAKLEY MODP group (RFC 3830 §4.2.7).
@@ -471,7 +479,15 @@ impl MikeyMessage {
         dh_public: &[u8],
     ) -> Result<Self> {
         check_modp_value(group, dh_public)?;
-        Self::build_dh_init(csc_id, ssrc, rand_bytes, group, dh_public, None)
+        Self::build_dh_init(
+            csc_id,
+            ssrc,
+            rand_bytes,
+            group,
+            dh_public,
+            None,
+            Timestamp::now(),
+        )
     }
 
     /// Build a DH initiator message with a security policy, using X25519.
@@ -489,6 +505,7 @@ impl MikeyMessage {
             DhGroup::X25519,
             dh_public,
             Some(sp),
+            Timestamp::now(),
         )
     }
 
@@ -502,7 +519,15 @@ impl MikeyMessage {
         sp: SpPayload,
     ) -> Result<Self> {
         check_modp_value(group, dh_public)?;
-        Self::build_dh_init(csc_id, ssrc, rand_bytes, group, dh_public, Some(sp))
+        Self::build_dh_init(
+            csc_id,
+            ssrc,
+            rand_bytes,
+            group,
+            dh_public,
+            Some(sp),
+            Timestamp::now(),
+        )
     }
 
     /// Shared construction for both DH-Init shapes.
@@ -517,6 +542,7 @@ impl MikeyMessage {
         group: DhGroup,
         dh_public: &[u8],
         sp: Option<SpPayload>,
+        ts: Timestamp,
     ) -> Result<Self> {
         let header = CommonHeader {
             version: 1,
@@ -534,11 +560,7 @@ impl MikeyMessage {
             }],
         };
 
-        let timestamp = TimestampPayload {
-            next_payload: PayloadType::Rand as u8,
-            ts_type: TimestampType::Counter,
-            ts_value: csc_id.to_be_bytes().to_vec(),
-        };
+        let timestamp = ts.to_payload(PayloadType::Rand as u8)?;
 
         let rand = RandPayload {
             next_payload: if sp.is_some() {
@@ -628,8 +650,28 @@ impl MikeyMessage {
     /// file or announced over SAP and no reply is possible. For mutual
     /// authentication use
     /// [`new_psk_init_requiring_verification`](MikeyMessage::new_psk_init_requiring_verification).
+    ///
+    /// The T payload carries the current time from [`SystemTime::now`]; use
+    /// [`new_psk_init_at`](MikeyMessage::new_psk_init_at) to supply it.
+    ///
+    /// [`SystemTime::now`]: std::time::SystemTime::now
     pub fn new_psk_init(csc_id: u32, ssrc: u32, rand_bytes: &[u8], psk: &[u8]) -> Result<Self> {
-        Self::build_psk_init(csc_id, ssrc, rand_bytes, psk, false)
+        Self::new_psk_init_at(csc_id, ssrc, rand_bytes, psk, Timestamp::now())
+    }
+
+    /// As [`new_psk_init`](MikeyMessage::new_psk_init), with an explicit
+    /// timestamp.
+    ///
+    /// For a message written to an SDP file or announced over SAP, where no
+    /// clock relates the two ends, [`Timestamp::Counter`] is the honest choice.
+    pub fn new_psk_init_at(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        psk: &[u8],
+        ts: Timestamp,
+    ) -> Result<Self> {
+        Self::build_psk_init(csc_id, ssrc, rand_bytes, psk, false, ts)
     }
 
     /// Build a PSK initiator message that requests a verification message in
@@ -646,7 +688,26 @@ impl MikeyMessage {
         rand_bytes: &[u8],
         psk: &[u8],
     ) -> Result<Self> {
-        Self::build_psk_init(csc_id, ssrc, rand_bytes, psk, true)
+        Self::new_psk_init_requiring_verification_at(
+            csc_id,
+            ssrc,
+            rand_bytes,
+            psk,
+            Timestamp::now(),
+        )
+    }
+
+    /// As
+    /// [`new_psk_init_requiring_verification`](MikeyMessage::new_psk_init_requiring_verification),
+    /// with an explicit timestamp.
+    pub fn new_psk_init_requiring_verification_at(
+        csc_id: u32,
+        ssrc: u32,
+        rand_bytes: &[u8],
+        psk: &[u8],
+        ts: Timestamp,
+    ) -> Result<Self> {
+        Self::build_psk_init(csc_id, ssrc, rand_bytes, psk, true, ts)
     }
 
     fn build_psk_init(
@@ -655,6 +716,7 @@ impl MikeyMessage {
         rand_bytes: &[u8],
         psk: &[u8],
         require_verification: bool,
+        ts: Timestamp,
     ) -> Result<Self> {
         let header = CommonHeader {
             version: 1,
@@ -672,11 +734,7 @@ impl MikeyMessage {
             }],
         };
 
-        let timestamp = TimestampPayload {
-            next_payload: PayloadType::Rand as u8,
-            ts_type: TimestampType::Counter,
-            ts_value: csc_id.to_be_bytes().to_vec(),
-        };
+        let timestamp = ts.to_payload(PayloadType::Rand as u8)?;
 
         let rand = RandPayload {
             next_payload: PayloadType::Kemac as u8,
@@ -873,6 +931,7 @@ impl MikeyMessage {
             dh_public,
             psk,
             sp,
+            Timestamp::now().to_payload(PayloadType::Rand as u8)?,
         )
     }
 
@@ -882,9 +941,10 @@ impl MikeyMessage {
     /// R_MESSAGE = HDR, T, DHr, KEMAC
     /// ```
     ///
-    /// The timestamp and RAND are taken from the initiator's message — §5.2
-    /// has the responder reuse the initiator's timestamp, and the RAND is part
-    /// of the `auth_key` label so both sides must agree on it.
+    /// The timestamp and RAND are taken from the initiator's message — §5.2:
+    /// "The Responder does not create a new timestamp, but uses the timestamp
+    /// used by the Initiator" — and the RAND is part of the `auth_key` label so
+    /// both sides must agree on it.
     pub fn new_dhhmac_resp(
         init: &MikeyMessage,
         group: DhGroup,
@@ -896,6 +956,13 @@ impl MikeyMessage {
             .rand_bytes()
             .ok_or(MikeyError::MissingPayload("RAND"))?
             .to_vec();
+        let timestamp = TimestampPayload {
+            next_payload: PayloadType::Rand as u8,
+            ..init
+                .timestamp_payload()
+                .ok_or(MikeyError::MissingPayload("T"))?
+                .clone()
+        };
         Self::build_dhhmac(
             DataType::DhHmacResp,
             init.header.csc_id,
@@ -905,6 +972,7 @@ impl MikeyMessage {
             dh_public,
             psk,
             None,
+            timestamp,
         )
     }
 
@@ -918,6 +986,7 @@ impl MikeyMessage {
         dh_public: &[u8],
         psk: &[u8],
         sp: Option<SpPayload>,
+        timestamp: TimestampPayload,
     ) -> Result<Self> {
         let cs_id_map = match ssrc {
             Some(ssrc) => vec![SrtpId {
@@ -938,12 +1007,6 @@ impl MikeyMessage {
             cs_count: cs_id_map.len() as u8,
             cs_id_map_type: 0,
             cs_id_map,
-        };
-
-        let timestamp = TimestampPayload {
-            next_payload: PayloadType::Rand as u8,
-            ts_type: TimestampType::Counter,
-            ts_value: csc_id.to_be_bytes().to_vec(),
         };
 
         let rand = RandPayload {
@@ -1221,9 +1284,9 @@ impl MikeyMessage {
     /// [`Freshness::Verified`] when the message carried an NTP-format timestamp
     /// that fell inside the window, or [`Freshness::ReplayOnly`] when it carried
     /// a COUNTER, which is not a clock and so cannot establish freshness. mykey
-    /// still emits COUNTER, so a mykey-to-mykey exchange yields `ReplayOnly`
-    /// today. Match on it if your deployment genuinely requires freshness
-    /// rather than replay rejection alone.
+    /// ≤ 2.2 always emitted COUNTER, so expect `ReplayOnly` from older senders.
+    /// Match on it if your deployment genuinely requires freshness rather than
+    /// replay rejection alone.
     ///
     /// # Errors
     ///
@@ -1424,6 +1487,7 @@ pub struct DhInitiator {
     rand_bytes: Vec<u8>,
     csc_id: u32,
     ssrc: u32,
+    timestamp: Option<Timestamp>,
 }
 
 impl DhInitiator {
@@ -1438,34 +1502,41 @@ impl DhInitiator {
             rand_bytes,
             csc_id,
             ssrc,
+            timestamp: None,
         }
+    }
+
+    /// Use `ts` in the init message instead of the time it is built.
+    pub fn with_timestamp(mut self, ts: Timestamp) -> Self {
+        self.timestamp = Some(ts);
+        self
     }
 
     /// Build the init message to send to the responder
     pub fn init_message(&self) -> Result<MikeyMessage> {
-        let public = self
-            .keypair
-            .as_ref()
-            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
-            .public;
-
-        MikeyMessage::new_dh_init(self.csc_id, self.ssrc, &self.rand_bytes, public.as_bytes())
+        self.build(None)
     }
 
     /// Build the init message with security policy
     pub fn init_message_with_sp(&self, sp: SpPayload) -> Result<MikeyMessage> {
+        self.build(Some(sp))
+    }
+
+    fn build(&self, sp: Option<SpPayload>) -> Result<MikeyMessage> {
         let public = self
             .keypair
             .as_ref()
             .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
             .public;
 
-        MikeyMessage::new_dh_init_with_sp(
+        MikeyMessage::build_dh_init(
             self.csc_id,
             self.ssrc,
             &self.rand_bytes,
+            DhGroup::X25519,
             public.as_bytes(),
             sp,
+            self.timestamp.unwrap_or_else(Timestamp::now),
         )
     }
 
@@ -1603,6 +1674,7 @@ pub struct DhHmacInitiator {
     rand_bytes: Vec<u8>,
     csc_id: u32,
     ssrc: u32,
+    timestamp: Option<Timestamp>,
 }
 
 impl DhHmacInitiator {
@@ -1619,7 +1691,14 @@ impl DhHmacInitiator {
             rand_bytes,
             csc_id,
             ssrc,
+            timestamp: None,
         })
+    }
+
+    /// Use `ts` in the init message instead of the time it is built.
+    pub fn with_timestamp(mut self, ts: Timestamp) -> Self {
+        self.timestamp = Some(ts);
+        self
     }
 
     /// The group this exchange uses.
@@ -1643,14 +1722,17 @@ impl DhHmacInitiator {
             .as_ref()
             .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
             .public_bytes();
-        MikeyMessage::new_dhhmac_init(
+        let ts = self.timestamp.unwrap_or_else(Timestamp::now);
+        MikeyMessage::build_dhhmac(
+            DataType::DhHmacInit,
             self.csc_id,
-            self.ssrc,
+            Some(self.ssrc),
             &self.rand_bytes,
             self.group,
             &public,
             &self.psk,
             sp,
+            ts.to_payload(PayloadType::Rand as u8)?,
         )
     }
 
@@ -1810,6 +1892,7 @@ pub struct ModpInitiator {
     rand_bytes: Vec<u8>,
     csc_id: u32,
     ssrc: u32,
+    timestamp: Option<Timestamp>,
 }
 
 impl ModpInitiator {
@@ -1829,7 +1912,14 @@ impl ModpInitiator {
             rand_bytes,
             csc_id,
             ssrc,
+            timestamp: None,
         })
+    }
+
+    /// Use `ts` in the init message instead of the time it is built.
+    pub fn with_timestamp(mut self, ts: Timestamp) -> Self {
+        self.timestamp = Some(ts);
+        self
     }
 
     /// The group this exchange uses.
@@ -1839,35 +1929,30 @@ impl ModpInitiator {
 
     /// Build the init message to send to the responder.
     pub fn init_message(&self) -> Result<MikeyMessage> {
-        let public = self.public_bytes()?;
-        MikeyMessage::new_dh_init_modp(
-            self.csc_id,
-            self.ssrc,
-            &self.rand_bytes,
-            self.group,
-            &public,
-        )
+        self.build(None)
     }
 
     /// Build the init message with a security policy.
     pub fn init_message_with_sp(&self, sp: SpPayload) -> Result<MikeyMessage> {
-        let public = self.public_bytes()?;
-        MikeyMessage::new_dh_init_modp_with_sp(
+        self.build(Some(sp))
+    }
+
+    fn build(&self, sp: Option<SpPayload>) -> Result<MikeyMessage> {
+        let public = self
+            .keypair
+            .as_ref()
+            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
+            .public_bytes();
+        check_modp_value(self.group, &public)?;
+        MikeyMessage::build_dh_init(
             self.csc_id,
             self.ssrc,
             &self.rand_bytes,
             self.group,
             &public,
             sp,
+            self.timestamp.unwrap_or_else(Timestamp::now),
         )
-    }
-
-    fn public_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self
-            .keypair
-            .as_ref()
-            .ok_or(MikeyError::Crypto("keypair already consumed".into()))?
-            .public_bytes())
     }
 
     /// Process the responder's message and derive SRTP keys.
@@ -2266,11 +2351,11 @@ mod tests {
         let mut bytes = msg.to_bytes().to_vec();
         // DH-Init layout (no SP):
         //   header(10) + cs_map_1_entry(9) = 19 bytes
-        //   T payload: next(1)+ts_type(1)+ts_value(4) = 6 bytes  [19..25]
-        //   RAND payload: next(1)+len(1)+rand(16) = 18 bytes      [25..43]
-        //   DH payload: next(1)+dh_group(1)+...                  [43..]
-        // bytes[43] = next_payload (0=Last), bytes[44] = dh_group (255=X25519)
-        bytes[44] = 50; // not a known DH group
+        //   T payload: next(1)+ts_type(1)+ts_value(8) = 10 bytes [19..29]
+        //   RAND payload: next(1)+len(1)+rand(16) = 18 bytes      [29..47]
+        //   DH payload: next(1)+dh_group(1)+...                  [47..]
+        // bytes[47] = next_payload (0=Last), bytes[48] = dh_group (255=X25519)
+        bytes[48] = 50; // not a known DH group
         assert!(MikeyMessage::from_bytes(&bytes).is_err());
     }
 
@@ -2279,10 +2364,10 @@ mod tests {
         let initiator = DhInitiator::new(1, 2);
         let msg = initiator.init_message().unwrap();
         let mut bytes = msg.to_bytes().to_vec();
-        // RAND payload starts at offset 25.
-        // bytes[25] = next_payload, bytes[26] = rand_len (16).
+        // RAND payload starts at offset 29.
+        // bytes[29] = next_payload, bytes[30] = rand_len (16).
         // Claim 200 bytes — far more than available.
-        bytes[26] = 200;
+        bytes[30] = 200;
         assert!(MikeyMessage::from_bytes(&bytes).is_err());
     }
 
@@ -2333,9 +2418,10 @@ mod tests {
 
         let psk = b"a-shared-secret-of-some-length!!";
         let rand = [0x5Au8; 16];
-        let msg = MikeyMessage::new_psk_init(0x1234, 0xABCD, &rand, psk).unwrap();
-        let wire = msg.to_bytes().to_vec();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let msg =
+            MikeyMessage::new_psk_init_at(0x1234, 0xABCD, &rand, psk, Timestamp::Ntp(now)).unwrap();
+        let wire = msg.to_bytes().to_vec();
 
         let mut cache = ReplayCache::new(Duration::from_secs(30));
 
@@ -2346,9 +2432,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             first.verify_fresh(&mut cache, now).unwrap(),
-            // mykey still emits COUNTER, so freshness cannot be established —
-            // only replay. This becomes Verified once NTP emission lands.
-            Freshness::ReplayOnly
+            Freshness::Verified
         );
 
         // Byte-identical redelivery still authenticates — which is exactly why
@@ -2373,10 +2457,60 @@ mod tests {
         let mut cache = ReplayCache::new(Duration::from_secs(30));
 
         for i in 0..4u8 {
-            let msg = MikeyMessage::new_psk_init(0x1000 + i as u32, 1, &[i; 16], psk).unwrap();
+            let msg = MikeyMessage::new_psk_init_at(
+                0x1000 + i as u32,
+                1,
+                &[i; 16],
+                psk,
+                Timestamp::Ntp(now),
+            )
+            .unwrap();
             msg.verify_fresh(&mut cache, now).unwrap();
         }
         assert_eq!(cache.len(), 4);
+    }
+
+    /// The default timestamp is the current time, so a receiver checking
+    /// against its own clock sees a fresh message.
+    #[test]
+    fn test_default_timestamp_is_ntp_now() {
+        use crate::replay::{Freshness, ReplayCache};
+        use std::time::{Duration, SystemTime};
+
+        let psk = b"a-shared-secret-of-some-length!!";
+        let msg = MikeyMessage::new_psk_init(1, 2, &[0x5Bu8; 16], psk).unwrap();
+        assert_eq!(
+            msg.timestamp_payload().unwrap().ts_type,
+            TimestampType::NtpUtc
+        );
+
+        let mut cache = ReplayCache::new(Duration::from_secs(5));
+        assert_eq!(
+            msg.verify_fresh(&mut cache, SystemTime::now()).unwrap(),
+            Freshness::Verified
+        );
+    }
+
+    /// COUNTER remains available, for exchanges with no clock relationship,
+    /// and still gets replay protection without a freshness claim.
+    #[test]
+    fn test_counter_timestamp_gives_replay_only() {
+        use crate::replay::{Freshness, ReplayCache};
+        use std::time::{Duration, SystemTime};
+
+        let psk = b"a-shared-secret-of-some-length!!";
+        let msg =
+            MikeyMessage::new_psk_init_at(1, 2, &[0x5Cu8; 16], psk, Timestamp::Counter(7)).unwrap();
+        let parsed = MikeyMessage::from_bytes(msg.to_bytes()).unwrap();
+        parsed
+            .complete_psk(psk, SrtpCryptoSuite::AES_128_CM_SHA1_80)
+            .unwrap();
+
+        let mut cache = ReplayCache::new(Duration::from_secs(30));
+        assert_eq!(
+            parsed.verify_fresh(&mut cache, SystemTime::now()).unwrap(),
+            Freshness::ReplayOnly
+        );
     }
 
     #[test]
@@ -2384,12 +2518,13 @@ mod tests {
         use crate::replay::ReplayCache;
         use std::time::{Duration, SystemTime};
 
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
             .unwrap()
+            .with_timestamp(Timestamp::Ntp(now))
             .init_message()
             .unwrap();
         let wire = init.to_bytes().to_vec();
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let mut cache = ReplayCache::new(Duration::from_secs(30));
 
         let first = MikeyMessage::from_bytes(&wire).unwrap();
@@ -2592,17 +2727,70 @@ mod tests {
         assert_ne!(keys[0], keys[1], "same PSK must not fix the session key");
     }
 
+    /// §5.2: "The Responder does not create a new timestamp, but uses the
+    /// timestamp used by the Initiator." Under COUNTER(csb_id) the two
+    /// coincided by accident; under NTP they would not.
+    #[test]
+    fn test_dhhmac_response_echoes_initiator_timestamp() {
+        use std::time::{Duration, SystemTime};
+
+        let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let init = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .with_timestamp(Timestamp::Ntp(then))
+            .init_message()
+            .unwrap();
+        let resp = DhHmacResponder::for_offer(&init, DHHMAC_PSK)
+            .unwrap()
+            .resp_message(&init)
+            .unwrap();
+
+        assert_eq!(resp.timestamp_payload(), init.timestamp_payload());
+    }
+
+    #[test]
+    fn test_initiators_use_supplied_timestamp() {
+        let ts = Timestamp::Counter(0xC0FFEE);
+        let expect = ts.to_payload(PayloadType::Rand as u8).unwrap();
+
+        let x25519 = DhInitiator::new(1, 2).with_timestamp(ts).init_message();
+        let modp = ModpInitiator::new(1, 2, DhGroup::Oakley5)
+            .unwrap()
+            .with_timestamp(ts)
+            .init_message();
+        let dhhmac = DhHmacInitiator::new(1, 2, DhGroup::Oakley5, DHHMAC_PSK)
+            .unwrap()
+            .with_timestamp(ts)
+            .init_message();
+
+        for msg in [x25519, modp, dhhmac] {
+            assert_eq!(msg.unwrap().timestamp_payload(), Some(&expect));
+        }
+    }
+
     // ── OAKLEY MODP exchange (RFC 3830 §4.2.7) ──────────────────────────────
 
     /// The X25519 wire format must not drift. These bytes were captured before
     /// the DH builders were refactored to share a core with the MODP paths; the
     /// refactor is only safe if they are unchanged.
+    ///
+    /// mykey ≤ 2.2 always sent `Counter(csb_id)`, so supplying that explicitly
+    /// must still reproduce them exactly.
     #[test]
     fn test_x25519_dh_wire_format_is_stable() {
         let pubkey = [0x42u8; 32];
         let rand = [0x5Au8; 16];
 
-        let init = MikeyMessage::new_dh_init(0x1234_5678, 0xDEAD_BEEF, &rand, &pubkey).unwrap();
+        let init = MikeyMessage::build_dh_init(
+            0x1234_5678,
+            0xDEAD_BEEF,
+            &rand,
+            DhGroup::X25519,
+            &pubkey,
+            None,
+            Timestamp::Counter(0x1234_5678),
+        )
+        .unwrap();
         assert_eq!(
             hex::encode(init.to_bytes()),
             "0104050012345678010000deadbeef000000000b021234567803105a5a5a5a5a5a5a             5a5a5a5a5a5a5a5a5a00ff4242424242424242424242424242424242424242424242             42424242424242424200".replace(' ', "")
@@ -2857,8 +3045,8 @@ mod tests {
         let init = MikeyMessage::new_psk_init(1, 2, &rand, TEST_PSK).unwrap();
         let mut bytes = init.to_bytes().to_vec();
 
-        // KEMAC starts at 43: next(1) enc_alg(1) len(2), so enc_data at 47.
-        bytes[47] ^= 0xFF;
+        // KEMAC starts at 47: next(1) enc_alg(1) len(2), so enc_data at 51.
+        bytes[51] ^= 0xFF;
 
         match MikeyMessage::from_bytes(&bytes)
             .unwrap()
@@ -2879,7 +3067,7 @@ mod tests {
 
         // mac_alg sits immediately after enc_data in the KEMAC.
         let enc_len = init.kemac().unwrap().enc_data.len();
-        bytes[43 + 4 + enc_len] = MacAlg::Null as u8;
+        bytes[47 + 4 + enc_len] = MacAlg::Null as u8;
 
         // Parsing may fail outright (the MAC length changes), but if it parses,
         // completing must refuse.
@@ -3107,14 +3295,14 @@ mod tests {
 
     #[test]
     fn test_emitted_messages_terminate_with_zero() {
-        // DH-Init: header(10) + cs_map(9) + T(6) + RAND(18) => DH payload at 43,
-        // whose next_payload is the chain terminator.
+        // DH-Init: header(10) + cs_map(9) + T(10) + RAND(18) => DH payload at
+        // 47, whose next_payload is the chain terminator.
         let dh = DhInitiator::new(1, 2).init_message().unwrap();
-        assert_eq!(dh.to_bytes()[43], 0, "DH-Init must terminate with 0");
+        assert_eq!(dh.to_bytes()[47], 0, "DH-Init must terminate with 0");
 
         // PSK-Init has the same prefix layout, with KEMAC in place of DH.
         let psk = MikeyMessage::new_psk_init(1, 2, &[0x55; 16], b"psk").unwrap();
-        assert_eq!(psk.to_bytes()[43], 0, "PSK-Init must terminate with 0");
+        assert_eq!(psk.to_bytes()[47], 0, "PSK-Init must terminate with 0");
     }
 
     #[test]

@@ -24,11 +24,11 @@ A Rust implementation of **MIKEY** (Multimedia Internet KEYing, [RFC 3830](https
 
 mykey is not a complete MIKEY implementation.
 
-**PSK mode** — the only method RFC 3830 makes mandatory to implement — follows the spec for key transport (§3.1), key wrapping (§4.2.3), key data framing (§6.13), MAC computation (§5.2) and verification messages (§6.9). Two gaps remain: the timestamp is the optional COUNTER type rather than a mandatory NTP type, and there is no replay protection.
+**PSK mode** — the only method RFC 3830 makes mandatory to implement — follows the spec for key transport (§3.1), key wrapping (§4.2.3), key data framing (§6.13), MAC computation (§5.2) and verification messages (§6.9), and sends the mandatory NTP-UTC timestamp type (§6.6).
 
 **DH mode** will not interoperate. It uses X25519 on a private-use DH-Group rather than an OAKLEY group, and omits the SIGN payload the RFC requires. This is deliberate — see the chapter below.
 
-Every known departure is catalogued in **[Deviations from RFC 3830](https://waxspin.github.io/mykey/concepts/rfc-deviations.html)** — read it before assuming a mykey exchange will interoperate with another MIKEY stack.
+Every known departure is catalogued in **[Deviations from RFC 3830](https://waxspin.github.io/mykey/book/concepts/rfc-deviations.html)** — read it before assuming a mykey exchange will interoperate with another MIKEY stack.
 
 ## Add to your project
 
@@ -119,7 +119,7 @@ peer.verify(received_msg.dh_public().unwrap())?;
 | PSK + verification message | Yes, mutual (both sides prove they hold the key) | Shared key | No |
 | Ephemeral DH + pinning | Yes (pinned public key) | Public key only | Yes |
 
-No mode currently provides replay protection — a captured message can be replayed and will be accepted. See [Deviations from RFC 3830](https://waxspin.github.io/mykey/concepts/rfc-deviations.html).
+Authentication alone does not stop a captured message from being replayed. Replay protection (RFC 3830 §5.4) is opt-in: verify the message, then pass it through a `replay::ReplayCache` with `verify_fresh`. See [Deviations from RFC 3830](https://waxspin.github.io/mykey/book/concepts/rfc-deviations.html#replay-protection).
 
 ## Dependencies
 

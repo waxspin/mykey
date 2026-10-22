@@ -44,12 +44,12 @@
 //! rather than an OAKLEY group and omits the SIGN payload the RFC requires, so
 //! it will not interoperate with another MIKEY stack.
 //!
-//! Two gaps remain even in PSK mode: the timestamp is the optional COUNTER type
-//! rather than a mandatory NTP type, and there is no replay protection. Every
-//! known departure is catalogued in the [Deviations from RFC 3830] chapter of
+//! PSK mode also sends the mandatory NTP-UTC timestamp type, and replay
+//! protection (§5.4) is available as an opt-in via [`replay`]. Every known
+//! departure is catalogued in the [Deviations from RFC 3830] chapter of
 //! the book — read it before assuming a mykey exchange will interoperate.
 //!
-//! [Deviations from RFC 3830]: https://waxspin.github.io/mykey/concepts/rfc-deviations.html
+//! [Deviations from RFC 3830]: https://waxspin.github.io/mykey/book/concepts/rfc-deviations.html
 //!
 //! [RFC 4567]: https://datatracker.ietf.org/doc/rfc4567/
 

@@ -52,6 +52,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   third-party parser can read a private-use group. Both results are recorded in
   the Interoperability chapter.
 
+- `payload::Timestamp` — `Ntp(SystemTime)` or `Counter(u32)` — to choose what an
+  initiator sends in its T payload, via `with_timestamp` on `DhInitiator`,
+  `ModpInitiator` and `DhHmacInitiator`, and the new
+  `MikeyMessage::new_psk_init_at` and
+  `new_psk_init_requiring_verification_at`. Supply one when the host has a
+  better wall clock than `SystemTime::now()` (a PTP-derived one, say), or use
+  `Counter` for offline SDP/SAP distribution, where no clock relates the two
+  ends.
+
+### Changed
+
+- **Initiator messages now carry an NTP-UTC timestamp** instead of a COUNTER
+  holding the CSB ID ([#24]). RFC 3830 §6.6 makes the NTP types mandatory and
+  COUNTER optional, and §5.2 requires every initiator message to carry a unique
+  timestamp, which `COUNTER(csb_id)` broke whenever a CSB was re-keyed.
+
+  **Wire-compatible in both directions** — no signatures change, and no major
+  version is needed. Every 2.x receiver already parses NTP-UTC, and the §4.2.3
+  KEMAC IV is built from whichever T arrives, so both ends derive the same keys.
+  COUNTER from older senders is still accepted. Explicit
+  `Timestamp::Counter(csb_id)` reproduces the 2.2 bytes exactly.
+
+  **One deployment-visible effect:** a receiver already calling `verify_fresh`
+  previously got `Freshness::ReplayOnly` from mykey senders, so clock skew never
+  mattered to it. Once a sender upgrades, its timestamps are checked against the
+  window, and badly synchronized clocks will surface as `StaleTimestamp`. That
+  is the feature working as intended — mykey-to-mykey exchanges can now return
+  `Freshness::Verified` — but check clock sync before upgrading senders, or have
+  them send `Timestamp::Counter` until you have.
+
+  Builder output is no longer byte-for-byte reproducible across calls, since
+  the timestamp changes; pass an explicit `Timestamp` where that matters.
+
+### Fixed
+
+- **The DHHMAC response now echoes the initiator's timestamp**, as RFC 3830
+  §5.2 requires: "The Responder does not create a new timestamp, but uses the
+  timestamp used by the Initiator." It previously minted its own
+  `COUNTER(csb_id)`, which matched the initiator's only by coincidence.
+- **The 2036 NTP rollover** (§4.2.8). `ntp_to_system_time` resolves the era with
+  the RFC 4330 §3 convention — most significant bit set is 1968–2036, clear is
+  2036–2104 — so timestamps after 2036-02-07 no longer decode as 1900.
+  `system_time_to_ntp` returns an error past 2104-02-26 instead of emitting a
+  value that would decode 136 years early.
+- Documentation links to the "Deviations from RFC 3830" chapter, in the README
+  and the crate docs, pointed at a path the docs site does not serve; they now
+  include `/book/`.
+
 ## [2.2.0] - 2026-10-20
 
 ### Added
