@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interoperability vectors for the §4.1.2 PRF, from an independent
+  implementation.** RFC 3830 ships no test vectors, so key derivation was until
+  now verified only against a reading of the RFC. `tests/interop_libmikey.rs`
+  pins it against libmikey's output instead, and `interop/libmikey/` holds the
+  harness that regenerates them.
+
+  The harness compiles libmikey's own `p()` and `prf()` — extracted verbatim
+  from csd/minisip — and diffs 58 vectors. **39 are byte-identical**, including
+  all seven derivation constants and the label layout, confirming mykey's
+  §4.1.3/§4.1.4 derivation against a second implementation.
+
+  The 19 that differ are exactly those whose input-key length is a multiple of
+  32 bytes, where libmikey passes `inkeyLength % 32` (zero) as the final block
+  length and so HMACs with an empty key. RFC 3830 §4.1.2 permits a short final
+  block but does not require one, so mykey's behaviour is correct and unchanged.
+  `prf_is_key_sensitive_at_multiples_of_32` pins down the property libmikey
+  loses.
+
+  Practical consequence, documented in the new
+  [Interoperability](book/src/concepts/interop.md) chapter: against libmikey the
+  handshake and DH exchange both succeed while the derived TEK differs, because
+  every OAKLEY MODP secret and minisip's default TGK are multiples of 32 bytes.
+  No code changes — this is test and documentation only.
+
+- **Wire-format validation against an independent parser.** Conformant byte
+  layout is a separate claim from correct key derivation, so it gets a separate
+  oracle: `examples/interop_pcap.rs` writes ten representative messages to a
+  pcap on UDP 2269 for Wireshark's `packet-mikey.c` to read back.
+
+  **Nine of the ten dissect completely** against Wireshark 4.2.2, with no
+  malformed packets and no expert infos: PSK init with and without the `V` flag,
+  PSK verification, DH init on OAKLEY 5/1/2, DH init carrying a Security Policy,
+  and DHHMAC init and response. Field values are read back as written, including
+  the §6.10 SRTP policy parameters, the `Last payload` terminator, and the
+  DH-Group numbering — where RFC 3830's order is unrelated to the OAKLEY names
+  (0 is OAKLEY 5), so a round-trip test could not have caught an error.
+
+  The tenth frame is the X25519 message on private-use DH-Group 255, which
+  Wireshark stops partway through. That is structural: the DH payload has no
+  length field, so the DH-value length is implied by the group, and no
+  third-party parser can read a private-use group. Both results are recorded in
+  the Interoperability chapter.
+
 ## [2.2.0] - 2026-10-20
 
 ### Added
