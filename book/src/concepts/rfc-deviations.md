@@ -18,8 +18,8 @@ mykey for interoperability with another MIKEY stack, read this page first.
 | PSK method (§3.1) | Compliant — fixed; random TGK transported under AES-CM, MAC verified on receive |
 | Key data sub-payload (§6.13) | Compliant — fixed |
 | Verification message (§6.9) | Compliant — fixed; opt-in via the V flag |
-| Timestamps (§4.2.8, §6.6) | **Deviates** — emits COUNTER (the optional type) rather than a mandatory NTP type |
-| Replay protection (§5.4) | **Partial** — opt-in `ReplayCache` rejects replays; freshness needs an NTP-format timestamp, which is not yet emitted |
+| Timestamps (§4.2.8, §6.6) | Compliant — fixed; emits NTP-UTC, resolves the 2036 rollover; COUNTER available explicitly |
+| Replay protection (§5.4) | Implemented, opt-in — `ReplayCache` rejects replays and checks freshness against a caller-supplied clock |
 | Public-key method (§3.2) | Not implemented |
 
 Interoperability work is planned: pre-shared key mode to §3.1 compliance, then
@@ -299,15 +299,41 @@ required".
 This is a breaking change against 1.0.0 in both directions: the KEMAC contents
 differ, and `complete_psk` now decrypts rather than re-deriving.
 
-## Timestamps
+## Timestamps — fixed
 
 RFC 3830 defines three timestamp types (§6.6, Table 6.6): NTP-UTC (0) and NTP (1)
 are **mandatory** and 64 bits wide; COUNTER (2) is **optional** and 32 bits.
 
-mykey emits COUNTER, with the CSB ID as the counter value. Moving to a mandatory
-NTP type requires a clock and a skew-tolerance policy, which also makes messages
-expire — a deployment constraint rather than a pure bug fix, so it is tracked
-separately.
+mykey ≤ 2.2 emitted COUNTER, with the CSB ID as the counter value. Besides using
+the optional type, that broke §5.2's rule that "all messages from the Initiator
+MUST use a unique timestamp" whenever a CSB was re-keyed.
+
+The builders now send NTP-UTC from `SystemTime::now()` by default. A caller with
+a better wall clock — or an offline exchange that has none — passes a
+`Timestamp` instead: `with_timestamp` on the initiator types, or
+`new_psk_init_at`. `Timestamp::Counter` remains for the offline case, where it
+is the honest choice; see [Replay protection](#replay-protection).
+
+**This is not a breaking wire change.** Every 2.x receiver parses NTP-UTC, and
+the §4.2.3 IV is computed from whatever T the message carries, so both ends
+agree. A COUNTER from an older sender is still accepted. The one visible effect
+is on a receiver already calling `verify_fresh`: messages from an upgraded sender
+now get their timestamps checked, so badly synchronized clocks will surface as
+`StaleTimestamp` where they previously passed as `ReplayOnly`.
+
+Responders echo the initiator's timestamp, per §5.2: "The Responder does not
+create a new timestamp, but uses the timestamp used by the Initiator." The PSK
+verification message always did; the DHHMAC response now does too, where under
+`COUNTER(csb_id)` it had only matched by coincidence.
+
+### The 2036 rollover
+
+§4.2.8 warns that the 32-bit seconds field wraps on 2036-02-07. mykey resolves
+the era with the convention of RFC 4330 §3: a value with the most significant
+bit set is in era 0 (1968–2036), and one with it clear is in era 1 (2036–2104).
+That gives up 1900–1968, which no MIKEY message can carry, and in return keeps
+decoding a pure function of the bytes. Encoding a time after 2104-02-26 is an
+error rather than a value that would decode 136 years early.
 
 The length of type 1 is now correct. `TimestampType::value_len()` previously
 reported 4 bytes where Table 6.6 specifies 64 bits, and because
@@ -324,8 +350,9 @@ Available as an opt-in: [`ReplayCache`] plus `MikeyMessage::verify_fresh`.
 mykey holds no global state, so the cache is the caller's, and its lifetime and
 memory are too.
 
-**mykey does not read the clock.** It cannot know the accuracy of the host's
-time source, and guessing wrong is harmful either way — too tight and legitimate
+**mykey does not read the clock when verifying.** (Builders read it by default
+when *sending*, which only affects what the receiver checks.) It cannot know the
+accuracy of the host's time source, and guessing wrong is harmful either way — too tight and legitimate
 messages expire, too loose and a captured message stays replayable. The caller
 supplies a `SystemTime`, which §5.4 supports directly: the allowable skew is
 "set by the local policy".
@@ -349,14 +376,14 @@ to the receiver later has no live clock relationship between the two ends, so no
 window is meaningful. Choosing a large one buys a false sense of protection
 rather than protection.
 
-### What it does and does not establish today
+### What it does and does not establish
 
 `verify_fresh` returns `Freshness::Verified` only when the message carried an
-NTP-format timestamp inside the window. **mykey still emits COUNTER**, so a
-mykey-to-mykey exchange yields `Freshness::ReplayOnly`: replays are rejected
-while the cache retains the entry, but freshness is not established. The return
-value is deliberately not `()` so a caller that requires freshness can tell it
-did not get it.
+NTP-format timestamp inside the window. A COUNTER — from mykey ≤ 2.2, or sent
+deliberately with `Timestamp::Counter` — yields `Freshness::ReplayOnly`: replays
+are rejected while the cache retains the entry, but freshness is not
+established. The return value is deliberately not `()` so a caller that
+requires freshness can tell it did not get it.
 
 Two further limits worth stating plainly:
 
@@ -473,9 +500,8 @@ so the one any other MIKEY stack is guaranteed to support — now follows §3.1 
 key transport, §4.2.3 for key wrapping, §6.13 for key data framing, §5.2 for MAC
 computation and coverage, and §6.9 for the verification message.
 
-Two gaps remain before a PSK exchange is fully conformant: the timestamp is the
-optional COUNTER type rather than a mandatory NTP type, and there is no replay
-protection. Neither prevents a conformant peer from parsing the message.
+It also sends the mandatory NTP-UTC timestamp type, and replay protection (§5.4)
+is available as an opt-in.
 
 Note that RFC 3830 publishes no test vectors, so conformance of the derivation
 chain can only be confirmed by testing against another implementation.

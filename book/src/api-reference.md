@@ -43,6 +43,8 @@ This page provides a navigational index of the public surface.
 | `MikeyMessage::verify_fresh` | Check a message against a replay cache and caller-supplied clock |
 | `MikeyMessage::new_psk_init` | Build a PSK-Init message (no verification requested) |
 | `MikeyMessage::new_psk_init_requiring_verification` | Build a PSK-Init that sets the V flag, for mutual authentication |
+| `MikeyMessage::new_psk_init_at` / `new_psk_init_requiring_verification_at` | As above, with an explicit `Timestamp` |
+| `DhInitiator` / `ModpInitiator` / `DhHmacInitiator` `::with_timestamp` | Use an explicit `Timestamp` instead of the time the init message is built |
 | `MikeyMessage::new_psk_verification` | Build the responder's verification message (§6.9) |
 | `MikeyMessage::verify_psk_verification` | Check a responder's verification message |
 | `MikeyMessage::requires_verification` | Whether the initiator set the V flag |
@@ -95,7 +97,7 @@ window; mykey holds no state of its own.
 |---|---|
 | `ReplayCache` | Caller-held cache of seen messages; the window doubles as the freshness tolerance |
 | `Freshness` | Whether freshness was `Verified`, or only `ReplayOnly` (COUNTER timestamp) |
-| `ntp_to_system_time` / `system_time_to_ntp` | §4.2.8 64-bit NTP timestamp conversion |
+| `ntp_to_system_time` / `system_time_to_ntp` | §4.2.8 64-bit NTP timestamp conversion; 2036 rollover resolved per RFC 4330 §3, valid 1970–2104 |
 | `NTP_UNIX_EPOCH_OFFSET` | 2 208 988 800 — seconds between the NTP and Unix epochs |
 
 ---
@@ -156,6 +158,7 @@ Low-level payload types. Most users should not need these directly — they are 
 |---|---|
 | `CommonHeader` | MIKEY common header (RFC 3830 §6.1) |
 | `DataType` | Message type enum (DH-Init, DH-Resp, PSK-Init, …) |
+| `Timestamp` | What an initiator sends in T: `Ntp(SystemTime)` (the default, via `Timestamp::now()`) or `Counter(u32)` |
 | `TimestampPayload` | TS payload (type 5) |
 | `RandPayload` | RAND nonce payload (type 11) |
 | `DhPayload` | DH public key payload (type 3) |

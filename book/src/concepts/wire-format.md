@@ -38,7 +38,7 @@ The CS ID map (when `#CS > 0` and `CS ID map type = 0`) adds 9 bytes per crypto 
 
 ## Payload Chain
 
-Payloads follow the header as a linked list. Each payload starts with a `next_payload` byte identifying the type of the payload that follows it. A value of `255` signals the last payload.
+Payloads follow the header as a linked list. Each payload starts with a `next_payload` byte identifying the type of the payload that follows it. A value of `0` ("Last payload", RFC 3830 Table 6.1.b) signals the last payload.
 
 ### Timestamp (type 5)
 
@@ -46,7 +46,11 @@ Payloads follow the header as a linked list. Each payload starts with a `next_pa
 ! next_payload  !  TS type (8)  !  TS value (32 or 64 bits)   ~
 ```
 
-mykey uses `TS type = 2` (Counter), encoding the CSB ID as a 4-byte counter value.
+mykey sends `TS type = 0` (NTP-UTC): 32 bits of seconds since 1900 and 32 bits
+of binary fraction, from `SystemTime::now()` unless the caller supplies a
+`Timestamp`. `TS type = 2` (Counter, 32 bits) is sent only when requested with
+`Timestamp::Counter`; mykey ≤ 2.2 always sent it, with the CSB ID as the value.
+All three types are accepted on receive.
 
 ### RAND (type 11)
 

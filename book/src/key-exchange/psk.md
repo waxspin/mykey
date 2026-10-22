@@ -84,9 +84,11 @@ Never transmit a PSK over the same network path that carries the SRTP media stre
 | Initiator authentication | Yes — the MAC is verified before any decryption, so an unauthenticated message yields no keys |
 | Mutual authentication | Only with a verification message — see below |
 | MITM protection | Yes, assuming PSK distribution was secure |
-| Replay protection | **Partial** — a fresh RAND gives each session distinct keys, but nothing tracks or rejects a replayed init message |
+| Replay protection | **Opt-in** — `verify_fresh` with a `ReplayCache` rejects replays and checks the NTP timestamp against your clock |
 
-Replay remains the open gap: mykey emits the optional COUNTER timestamp rather than a mandatory NTP type, and keeps no record of timestamps or RAND values it has seen. A captured PSK-Init can be replayed, and the receiver will accept it and derive the same keys. Do not rely on PSK mode alone to guarantee session freshness.
+The MAC alone does not stop replay: a captured PSK-Init authenticates perfectly well a second time, and the receiver derives the same keys. Pass each authenticated message through `verify_fresh`, which returns `Freshness::Verified` when the timestamp falls inside your window. See [Replay protection](../concepts/rfc-deviations.md#replay-protection) for choosing the window.
+
+For a message distributed offline — written to an SDP file or announced over SAP — there is no clock relationship between the two ends, so no window is meaningful. Build it with `new_psk_init_at(…, Timestamp::Counter(n))` to say so; the receiver then gets `Freshness::ReplayOnly` rather than a freshness claim it cannot back.
 
 ## Mutual authentication
 
