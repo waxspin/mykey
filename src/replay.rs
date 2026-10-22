@@ -52,6 +52,10 @@ use crate::error::{MikeyError, Result};
 /// Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 pub const NTP_UNIX_EPOCH_OFFSET: u64 = 2_208_988_800;
 
+/// First second, counted from 1900, that the era pivot in
+/// [`ntp_to_system_time`] cannot represent: 2104-02-26.
+const NTP_ERA_1_END: u64 = (1 << 32) + (1 << 31);
+
 /// Default cap on cached entries.
 ///
 /// §5.4 anticipates overload: "If the host loses track of the incoming requests
@@ -74,8 +78,9 @@ pub enum Freshness {
     /// The message carried a COUNTER timestamp, which is not a clock, so only
     /// replay was checked — not freshness.
     ///
-    /// mykey itself still emits COUNTER, so this is the result for a
-    /// mykey-to-mykey exchange until NTP-format emission lands. A peer could
+    /// Expect this from mykey ≤ 2.2 senders, which always emitted COUNTER, and
+    /// from messages built with
+    /// [`Timestamp::Counter`](crate::payload::Timestamp::Counter). A peer could
     /// replay such a message once the cache has expired its entry.
     ReplayOnly,
 }
@@ -226,6 +231,15 @@ fn skew(a: SystemTime, b: SystemTime) -> Duration {
 ///
 /// The upper 32 bits are seconds since 1900-01-01 and the lower 32 are a binary
 /// fraction of a second.
+///
+/// # The 2036 rollover
+///
+/// §4.2.8 warns that the 32-bit second count wraps on 2036-02-07. This resolves
+/// the era with the convention of RFC 4330 §3: a count with the most
+/// significant bit set is in era 0 (1968–2036), and one with it clear is in
+/// era 1 (2036–2104). Era 0's lower half, 1900–1968, is given up for this, which
+/// costs nothing — no MIKEY timestamp predates 1968 — and keeps the conversion
+/// a pure function of the bytes, with no reference clock needed.
 pub fn ntp_to_system_time(bytes: &[u8]) -> Result<SystemTime> {
     if bytes.len() != 8 {
         return Err(MikeyError::Parse(format!(
@@ -234,12 +248,15 @@ pub fn ntp_to_system_time(bytes: &[u8]) -> Result<SystemTime> {
         )));
     }
 
-    let secs_1900 = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
+    let mut secs_1900 = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
     let frac = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64;
 
-    // Timestamps before the Unix epoch cannot be represented; §4.2.8 also warns
-    // that the 32-bit second count rolls over around 2036, which this does not
-    // yet attempt to disambiguate.
+    if secs_1900 & 0x8000_0000 == 0 {
+        secs_1900 += 1 << 32;
+    }
+
+    // 1968–1970 still lands before the Unix epoch, which SystemTime arithmetic
+    // here does not represent.
     let unix_secs = secs_1900
         .checked_sub(NTP_UNIX_EPOCH_OFFSET)
         .ok_or_else(|| MikeyError::Parse("NTP timestamp precedes the Unix epoch".into()))?;
@@ -251,6 +268,10 @@ pub fn ntp_to_system_time(bytes: &[u8]) -> Result<SystemTime> {
 }
 
 /// Render a [`SystemTime`] as a 64-bit NTP-format timestamp (§4.2.8).
+///
+/// Representable from the Unix epoch up to 2104-02-26, the end of the era that
+/// [`ntp_to_system_time`] can tell apart. A later time is an error rather than
+/// a timestamp that would read back 136 years early.
 pub fn system_time_to_ntp(t: SystemTime) -> Result<[u8; 8]> {
     let since_epoch = t
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -259,10 +280,12 @@ pub fn system_time_to_ntp(t: SystemTime) -> Result<[u8; 8]> {
     let secs_1900 = since_epoch
         .as_secs()
         .checked_add(NTP_UNIX_EPOCH_OFFSET)
-        .ok_or_else(|| MikeyError::Crypto("timestamp overflows the NTP epoch".into()))?;
+        .filter(|s| *s < NTP_ERA_1_END)
+        .ok_or_else(|| MikeyError::Crypto("time is beyond the NTP era 1 (2104)".into()))?;
 
     let mut out = [0u8; 8];
-    // Truncating to 32 bits is the documented §4.2.8 rollover.
+    // Truncating to 32 bits is the §4.2.8 rollover; ntp_to_system_time undoes
+    // it.
     out[..4].copy_from_slice(&(secs_1900 as u32).to_be_bytes());
     let frac = ((since_epoch.subsec_nanos() as u64) << 32) / 1_000_000_000;
     out[4..].copy_from_slice(&(frac as u32).to_be_bytes());
@@ -307,6 +330,48 @@ mod tests {
         let err = skew(back, t);
         // 1/2^32 s ≈ 233 ps, so a nanosecond of slack is ample.
         assert!(err <= Duration::from_nanos(1), "lost precision: {err:?}");
+    }
+
+    /// Unix time at which the 32-bit NTP second count wraps: 2036-02-07 06:28:16.
+    const ROLLOVER: u64 = (1 << 32) - NTP_UNIX_EPOCH_OFFSET;
+
+    #[test]
+    fn test_ntp_roundtrip_across_the_2036_rollover() {
+        for secs in [
+            ROLLOVER - 1,
+            ROLLOVER,
+            ROLLOVER + 1,
+            3_000_000_000, // 2065
+            4_233_462_143, // 2104-02-26, the last representable second
+        ] {
+            let t = at(secs);
+            let bytes = system_time_to_ntp(t).unwrap();
+            assert_eq!(
+                ntp_to_system_time(&bytes).unwrap(),
+                t,
+                "roundtrip at {secs}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ntp_wraps_to_zero_at_the_rollover() {
+        let bytes = system_time_to_ntp(at(ROLLOVER)).unwrap();
+        assert_eq!(&bytes[..4], &[0, 0, 0, 0]);
+    }
+
+    /// Past the era pivot's range the bytes would read back 136 years early, so
+    /// encoding must refuse instead.
+    #[test]
+    fn test_ntp_beyond_era_1_rejected() {
+        assert!(system_time_to_ntp(at(4_233_462_144)).is_err());
+    }
+
+    /// 1968–1970 sits in era 0 but before the Unix epoch.
+    #[test]
+    fn test_ntp_before_unix_epoch_rejected() {
+        let bytes = 0x8000_0000u32.to_be_bytes(); // 1968-01-20
+        assert!(ntp_to_system_time(&[bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0]).is_err());
     }
 
     #[test]

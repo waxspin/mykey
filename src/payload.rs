@@ -1,6 +1,9 @@
 #![allow(missing_docs)]
 
+use std::time::SystemTime;
+
 use crate::error::{MikeyError, Result};
+use crate::replay::system_time_to_ntp;
 
 /// MIKEY `Next Payload` values as defined in RFC 3830 Section 6.1, Table 6.1.b.
 ///
@@ -151,6 +154,43 @@ pub struct TimestampPayload {
     pub next_payload: u8,
     pub ts_type: TimestampType,
     pub ts_value: Vec<u8>,
+}
+
+/// The timestamp an initiator puts in its T payload.
+///
+/// The builders default to [`Timestamp::now`]. Supply one explicitly when the
+/// host has a better wall clock than [`SystemTime::now`] — a PTP-derived one,
+/// say — or for an offline exchange with no clock relationship between the two
+/// ends, where [`Timestamp::Counter`] says so honestly instead of carrying a time
+/// the receiver cannot meaningfully check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timestamp {
+    /// A wall-clock time, sent as a 64-bit NTP-UTC timestamp (§4.2.8). This is
+    /// what lets [`verify_fresh`](crate::message::MikeyMessage::verify_fresh)
+    /// return [`Freshness::Verified`](crate::replay::Freshness::Verified).
+    Ntp(SystemTime),
+    /// A 32-bit COUNTER, which is not a clock: replay can be checked, but not
+    /// freshness. mykey ≤ 2.2 sent the CSB ID here.
+    Counter(u32),
+}
+
+impl Timestamp {
+    /// The current time from [`SystemTime::now`].
+    pub fn now() -> Self {
+        Self::Ntp(SystemTime::now())
+    }
+
+    pub(crate) fn to_payload(self, next_payload: u8) -> Result<TimestampPayload> {
+        let (ts_type, ts_value) = match self {
+            Self::Ntp(t) => (TimestampType::NtpUtc, system_time_to_ntp(t)?.to_vec()),
+            Self::Counter(c) => (TimestampType::Counter, c.to_be_bytes().to_vec()),
+        };
+        Ok(TimestampPayload {
+            next_payload,
+            ts_type,
+            ts_value,
+        })
+    }
 }
 
 /// Timestamp types from RFC 3830 §6.6, Table 6.6.
