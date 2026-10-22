@@ -40,9 +40,11 @@
 //! mykey is not a complete MIKEY implementation. Pre-shared key mode — the only
 //! method [RFC 3830] makes mandatory — follows the spec for key transport
 //! (§3.1), key wrapping (§4.2.3), key data framing (§6.13), MAC computation
-//! (§5.2) and verification messages (§6.9). DH mode does not: it uses X25519
-//! rather than an OAKLEY group and omits the SIGN payload the RFC requires, so
-//! it will not interoperate with another MIKEY stack.
+//! (§5.2) and verification messages (§6.9). Authenticated DH interoperates via
+//! DHHMAC ([RFC 4650]) over the OAKLEY groups. The default X25519 DH mode does
+//! not: it uses a private-use DH-Group, since no MIKEY registry has an
+//! elliptic-curve group, and omits the SIGN payload §3.3 requires, as plain
+//! OAKLEY DH does too.
 //!
 //! PSK mode also sends the mandatory NTP-UTC timestamp type, and replay
 //! protection (§5.4) is available as an opt-in via [`replay`]. Every known
@@ -52,6 +54,7 @@
 //! [Deviations from RFC 3830]: https://waxspin.github.io/mykey/book/concepts/rfc-deviations.html
 //!
 //! [RFC 4567]: https://datatracker.ietf.org/doc/rfc4567/
+//! [RFC 4650]: https://datatracker.ietf.org/doc/rfc4650/
 
 /// MIKEY PRF, DH key pair, and MAC primitives.
 pub mod crypto;
