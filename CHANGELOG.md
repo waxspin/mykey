@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-22
+
 ### Added
 
 - **Interoperability vectors for the §4.1.2 PRF, from an independent
@@ -314,8 +316,9 @@ Initial 1.0 release.
 
 <!-- Version links. The marker below is where cargo-release inserts the link for
      each newly released version; see pre-release-replacements in Cargo.toml. -->
-[Unreleased]: https://github.com/waxspin/mykey/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/waxspin/mykey/compare/v2.3.0...HEAD
 <!-- next-compare -->
+[2.3.0]: https://github.com/waxspin/mykey/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/waxspin/mykey/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/waxspin/mykey/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/waxspin/mykey/compare/v1.0.0...v2.0.0
