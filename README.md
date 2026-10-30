@@ -36,7 +36,7 @@ Every known departure is catalogued in **[Deviations from RFC 3830](https://waxs
 
 ```toml
 [dependencies]
-mykey = "2.3.0"
+mykey = "2.3.1"
 ```
 
 or to get whatever the latest in Crates.io is, just type:
