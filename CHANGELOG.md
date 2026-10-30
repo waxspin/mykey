@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depending on compiler and target CPU. X25519 and PSK modes do not use
   `crypto-bigint`.
 
+  If you cannot upgrade mykey straight away, `cargo update -p crypto-bigint`
+  applies the same fix to any 2.1.0–2.3.0 build.
+
 ## [2.3.0] - 2026-10-22
 
 ### Added
