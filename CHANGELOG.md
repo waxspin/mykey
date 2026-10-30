@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Require `crypto-bigint` 0.7.10 or later**, which also brings in `ctutils`
+  0.4.6 or later. Earlier versions could branch on secret values in operations
+  meant to be constant-time, including Montgomery multiplication
+  ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html),
+  [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html)).
+  mykey uses these operations for OAKLEY modular exponentiation with the private
+  DH exponent, so OAKLEY and DHHMAC exchanges in 2.1.0–2.3.0 were exposed,
+  depending on compiler and target CPU. X25519 and PSK modes do not use
+  `crypto-bigint`.
+
 ## [2.3.0] - 2026-10-22
 
 ### Added

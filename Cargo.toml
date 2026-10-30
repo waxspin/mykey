@@ -26,7 +26,7 @@ base64 = "0.22"
 # AES-CM key wrapping of the KEMAC payload (RFC 3830 §4.2.3)
 aes = "0.9"
 ctr = "0.10"
-crypto-bigint = { version = "0.7", features = ["alloc"] }
+crypto-bigint = { version = "0.7.10", features = ["alloc"] }
 
 [package.metadata.release]
 # cargo-release bumps Cargo.toml, but nothing in prose. The README's install
