@@ -29,6 +29,10 @@ ctr = "0.10"
 crypto-bigint = { version = "0.7.10", features = ["alloc"] }
 
 [package.metadata.release]
+# 2.3.1 was released from an already-merged feature branch, which left its tag
+# off main.
+allow-branch = ["main"]
+
 # cargo-release bumps Cargo.toml, but nothing in prose. The README's install
 # snippet pins an explicit version, so it needs rewriting too or it ships
 # pointing at the previous release.
